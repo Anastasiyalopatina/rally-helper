@@ -6,6 +6,7 @@ import radar.vision.ArgbImage
 import radar.vision.DetectorTemplates
 import radar.vision.RallyDetector
 import radar.vision.RuntimeTemplateCodec
+import radar.vision.NormalizedRect
 
 internal class BitmapArgbImage(private val bitmap: Bitmap) : ArgbImage {
     override val width: Int get() = bitmap.width
@@ -35,4 +36,12 @@ internal class IntArrayArgbImage(
     }
 
     override fun argb(x: Int, y: Int): Int = pixels[y * width + x]
+
+    fun mask(rect: NormalizedRect, color: Int = 0xFFB8C4D0.toInt()) {
+        val left = (rect.left * width).toInt().coerceIn(0, width)
+        val right = (rect.right * width).toInt().coerceIn(left, width)
+        val top = (rect.top * height).toInt().coerceIn(0, height)
+        val bottom = (rect.bottom * height).toInt().coerceIn(top, height)
+        for (y in top until bottom) pixels.fill(color, y * width + left, y * width + right)
+    }
 }

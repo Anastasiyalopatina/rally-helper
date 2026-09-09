@@ -3,6 +3,7 @@ package com.rallyhelper.data
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
+import androidx.room.ColumnInfo
 import androidx.room.Insert
 import androidx.room.PrimaryKey
 import androidx.room.Query
@@ -20,12 +21,20 @@ import androidx.room.RoomDatabase
     val sessionId: Long,
     val rallyId: String,
     val observedAtMonotonicMs: Long,
+    @ColumnInfo(defaultValue = "0") val observedAtEpochMs: Long,
     val boss: String,
     val level: Int?,
     val participantCount: Int?,
     val capacity: Int?,
     val countdownSeconds: Int?,
     val actionable: Boolean,
+    val selectedDelaySeconds: Int? = null,
+    val skipDecision: Boolean? = null,
+    @ColumnInfo(defaultValue = "0") val attempted: Boolean = false,
+    val squad: String? = null,
+    val travelTimeSeconds: Int? = null,
+    val result: String? = null,
+    val failureReason: String? = null,
 )
 
 @Entity data class DetectorDecisionRecord(
@@ -54,7 +63,7 @@ import androidx.room.RoomDatabase
 
 @Database(
     entities = [RadarSession::class, RallyObservation::class, DetectorDecisionRecord::class, SafetyAbort::class],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class RadarDatabase : RoomDatabase() {

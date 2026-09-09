@@ -1,6 +1,6 @@
 package radar.vision
 
-enum class RuntimeMode { RADAR, SHADOW_AUTO }
+enum class RuntimeMode { RADAR, ONE_TAP, AUTO, SHADOW_AUTO }
 
 enum class DecisionKind { OBSERVE, WOULD_SELECT, WOULD_SEND, REJECT }
 
@@ -11,6 +11,8 @@ data class SafetyPolicy(
     val minLevelConfidence: Float = 0.62f,
     val minPlusConfidence: Float = 0.55f,
     val maxTravelSeconds: Int = 60,
+    val minimumFreeSlots: Int = 1,
+    val safetyMarginSeconds: Int = 3,
 )
 
 data class DetectorDecision(
@@ -22,9 +24,6 @@ data class DetectorDecision(
 
 class SafetyController(private val policy: SafetyPolicy = SafetyPolicy()) {
     fun decide(mode: RuntimeMode, frame: FrameAnalysis, tracks: TrackingUpdate): List<DetectorDecision> {
-        if (mode == RuntimeMode.RADAR) return tracks.active.map {
-            DetectorDecision(DecisionKind.OBSERVE, it.id, "radar-only")
-        }
         if (frame.screen != ScreenState.EVENT_LIST || frame.screenConfidence < policy.minScreenConfidence) {
             return listOf(DetectorDecision(DecisionKind.REJECT, null, "screen not safely classified"))
         }
@@ -37,13 +36,30 @@ class SafetyController(private val policy: SafetyPolicy = SafetyPolicy()) {
                 rally.bossType != BossType.TARGET -> "not a confirmed target"
                 rally.confidences.boss < policy.minBossConfidence -> "boss confidence too low"
                 rally.level == null || rally.confidences.level < policy.minLevelConfidence -> "level unknown"
+                rally.participantCount == null || rally.capacity == null -> "participant capacity unknown"
+                rally.capacity - rally.participantCount < policy.minimumFreeSlots -> "not enough free slots"
                 rally.joinedState != JoinedState.JOINABLE -> "rally not joinable"
                 rally.joinPlusBounds.isEmpty() || rally.confidences.plus < policy.minPlusConfidence -> "plus unknown"
                 else -> null
             }
             if (reason == null) DetectorDecision(
-                DecisionKind.WOULD_SELECT, track.id, "shadow decision only", rally.joinPlusBounds.first(),
+                DecisionKind.WOULD_SELECT,
+                track.id,
+                when (mode) {
+                    RuntimeMode.RADAR -> "eligible radar alert"
+                    RuntimeMode.ONE_TAP -> "eligible one-tap candidate"
+                    RuntimeMode.AUTO -> "eligible auto candidate"
+                    RuntimeMode.SHADOW_AUTO -> "shadow decision only"
+                },
+                rally.joinPlusBounds.first(),
             ) else DetectorDecision(DecisionKind.REJECT, track.id, reason)
         }
+    }
+
+    fun canSend(travelTimeSeconds: Int?, estimatedRallyRemainingSeconds: Int?): Boolean {
+        if (travelTimeSeconds == null || estimatedRallyRemainingSeconds == null) return false
+        if (travelTimeSeconds < 0 || estimatedRallyRemainingSeconds < 0) return false
+        return travelTimeSeconds <= policy.maxTravelSeconds &&
+            travelTimeSeconds + policy.safetyMarginSeconds < estimatedRallyRemainingSeconds
     }
 }

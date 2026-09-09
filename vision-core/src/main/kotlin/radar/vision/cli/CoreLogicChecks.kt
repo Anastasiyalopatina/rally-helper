@@ -3,6 +3,9 @@ package radar.vision.cli
 import radar.vision.AutomationEvent
 import radar.vision.AutomationState
 import radar.vision.AutomationStateMachine
+import radar.vision.AutoPolicy
+import radar.vision.AutoPolicyConfig
+import radar.vision.AutoPolicyDecision
 import radar.vision.BossType
 import radar.vision.FrameAnalysis
 import radar.vision.JoinedState
@@ -17,6 +20,7 @@ import radar.vision.RuntimeMode
 import radar.vision.SafetyController
 import radar.vision.SafetyPolicy
 import radar.vision.TransitionResult
+import kotlin.random.Random
 
 fun main() {
     val upper = NormalizedRect(0.1, 0.1, 0.9, 0.3)
@@ -55,6 +59,13 @@ fun main() {
         SafetyController(SafetyPolicy(targetLevels = emptySet()))
             .decide(RuntimeMode.SHADOW_AUTO, secondFrame, currentTracking).single().kind == DecisionKind.REJECT,
     ) { "An empty target policy must select nothing" }
+    check(
+        SafetyController(SafetyPolicy(minimumFreeSlots = 4))
+            .decide(RuntimeMode.RADAR, secondFrame, currentTracking).single().kind == DecisionKind.REJECT,
+    ) { "Free-slot policy must be applied even in RADAR mode" }
+    check(SafetyController(SafetyPolicy(safetyMarginSeconds = 3)).canSend(7, 11))
+    check(!SafetyController(SafetyPolicy(safetyMarginSeconds = 3)).canSend(7, 10))
+    check(!SafetyController().canSend(null, 40))
 
     val outOfPolicyTracker = RallyTracker()
     outOfPolicyTracker.update(frame(20, listOf(candidate(upper, 1, 30, BossType.UNKNOWN, 14))))
@@ -101,8 +112,24 @@ fun main() {
     check(machine.current.state == AutomationState.TARGET_DETECTED)
     check(machine.dispatch(AutomationEvent.DelayElapsed(6), 130) is TransitionResult.Rejected)
     check(machine.dispatch(AutomationEvent.DelayElapsed(7), 130) is TransitionResult.Accepted)
+
+    val autoPolicy = AutoPolicy(AutoPolicyConfig(delayMinSeconds = 2, delayMaxSeconds = 4, skipMin = 1, skipMax = 1), Random(7))
+    val skipped = autoPolicy.onEligible(RallyId("skip"))
+    check(skipped is AutoPolicyDecision.Skip && skipped.remainingEligibleSkips == 0)
+    autoPolicy.onRejected()
+    val selected = autoPolicy.onEligible(RallyId("selected"))
+    check(selected is AutoPolicyDecision.Wait && selected.delaySeconds in 2..4)
+    check(autoPolicy.onEligible(RallyId("selected")) == selected) { "Delay must be sampled once per rally" }
+    autoPolicy.onAttemptFinished(RallyId("selected"))
+    check(autoPolicy.onEligible(RallyId("next")) is AutoPolicyDecision.Skip) { "A new skip K is required after an attempt" }
+    autoPolicy.updateConfig(AutoPolicyConfig(skipMin = 2, skipMax = 2))
+    val reconfigured = autoPolicy.onEligible(RallyId("reconfigured"))
+    check(reconfigured is AutoPolicyDecision.Skip && reconfigured.remainingEligibleSkips == 1) {
+        "A live range change must resample K inside the new range"
+    }
     println(
         "PASS stale-track action guard; PASS duplicate/reorder identity; " +
-            "PASS out-of-policy early reject; PASS explicit transitions/pause/flow-id guard",
+            "PASS out-of-policy/free-slot/travel guards; PASS deterministic auto policy; " +
+            "PASS explicit transitions/pause/flow-id guard",
     )
 }

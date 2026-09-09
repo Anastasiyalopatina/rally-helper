@@ -1,6 +1,8 @@
 # Rally Helper
 
-Android/Kotlin utility project.
+Local Android/Kotlin screen-analysis utility.
+
+The public build is fail-closed: input actions remain disabled until the recorded device-validation gates pass.
 
 ## Build
 

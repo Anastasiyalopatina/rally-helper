@@ -2,8 +2,10 @@ package com.rallyhelper
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -20,26 +22,32 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.rallyhelper.capture.RadarForegroundService
+import com.rallyhelper.data.DebugCaptureMode
 import com.rallyhelper.data.RadarSettings
 import com.rallyhelper.data.RadarSettingsStore
-import com.rallyhelper.data.DebugCaptureMode
 import com.rallyhelper.debug.DebugCaptureStore
 import kotlinx.coroutines.launch
 import radar.vision.RuntimeMode
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -54,6 +62,7 @@ class MainActivity : ComponentActivity() {
         val settings by settingsStore.settings.collectAsStateWithLifecycle(initialValue = RadarSettings())
         val scope = rememberCoroutineScope()
         val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+        val overlayPermission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {}
         val projectionConsent = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val data = result.data
             if (result.resultCode == Activity.RESULT_OK && data != null) {
@@ -69,88 +78,188 @@ class MainActivity : ComponentActivity() {
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Text("Rally Helper", style = MaterialTheme.typography.headlineMedium)
-                Text("Live Radar · никаких жестов", color = Color(0xFF15803D))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ModeButton("RADAR", settings.mode == RuntimeMode.RADAR) {
-                        scope.launch { settingsStore.setMode(RuntimeMode.RADAR) }
+                Text("Локальный анализ экрана", color = Color(0xFF15803D))
+
+                SettingsCard("Режим") {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ModeButton("RADAR", settings.mode == RuntimeMode.RADAR) {
+                            scope.launch { settingsStore.setMode(RuntimeMode.RADAR) }
+                        }
+                        ModeButton("ONE_TAP", settings.mode == RuntimeMode.ONE_TAP) {
+                            scope.launch { settingsStore.setMode(RuntimeMode.ONE_TAP) }
+                        }
+                        ModeButton("AUTO", settings.mode == RuntimeMode.AUTO) {
+                            scope.launch { settingsStore.setMode(RuntimeMode.AUTO) }
+                        }
                     }
-                    ModeButton("SHADOW AUTO", settings.mode == RuntimeMode.SHADOW_AUTO) {
+                    if (settings.mode == RuntimeMode.ONE_TAP || settings.mode == RuntimeMode.AUTO) {
+                        Text(
+                            "Игровые действия заблокированы до завершения device validation.",
+                            color = Color(0xFFB45309),
+                        )
+                    }
+                }
+
+                SettingsCard("Основные настройки") {
+                    Text("Целевые уровни")
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        listOf(5, 10, 15, 20).forEach { level ->
+                            LevelToggle(level, level in settings.selectedLevels) {
+                                scope.launch { settingsStore.setSelectedLevels(settings.selectedLevels.toggle(level)) }
+                            }
+                        }
+                    }
+                    if (settings.selectedLevels.isEmpty()) Text("Выберите хотя бы один уровень.", color = Color.Red)
+                    ValueSlider("Минимум свободных мест", settings.minimumFreeSlots, 1..5) { value ->
+                        scope.launch { settingsStore.setMinimumFreeSlots(value) }
+                    }
+                    HorizontalDivider()
+                    Text("Задержка перед присоединением")
+                    ValueSlider("MIN, сек", settings.delayMinSeconds, 0..120) { value ->
+                        scope.launch { settingsStore.setDelayRange(value, maxOf(value, settings.delayMaxSeconds)) }
+                    }
+                    ValueSlider("MAX, сек", settings.delayMaxSeconds, 0..120) { value ->
+                        scope.launch { settingsStore.setDelayRange(minOf(value, settings.delayMinSeconds), value) }
+                    }
+                    Text("Для каждого rally задержка выбирается один раз; после неё обязательна свежая проверка.")
+                    HorizontalDivider()
+                    Text("Пропускать подходящих штурмов между попытками")
+                    ValueSlider("MIN", settings.skipMin, 0..20) { value ->
+                        scope.launch { settingsStore.setSkipRange(value, maxOf(value, settings.skipMax)) }
+                    }
+                    ValueSlider("MAX", settings.skipMax, 0..20) { value ->
+                        scope.launch { settingsStore.setSkipRange(minOf(value, settings.skipMin), value) }
+                    }
+                    ValueSlider("Запас времени, сек", settings.safetyMarginSeconds, 0..30) { value ->
+                        scope.launch { settingsStore.setSafetyMarginSeconds(value) }
+                    }
+                    SettingSwitch("Звук", settings.soundEnabled) {
+                        scope.launch { settingsStore.setSoundEnabled(it) }
+                    }
+                    SettingSwitch("Вибрация", settings.vibrationEnabled) {
+                        scope.launch { settingsStore.setVibrationEnabled(it) }
+                    }
+                    SettingSwitch("Показывать overlay", settings.overlayEnabled) {
+                        scope.launch { settingsStore.setOverlayEnabled(it) }
+                    }
+                    if (settings.overlayEnabled && !android.provider.Settings.canDrawOverlays(this@MainActivity)) {
+                        OutlinedButton(onClick = {
+                            overlayPermission.launch(
+                                Intent(
+                                    android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:$packageName"),
+                                ),
+                            )
+                        }) { Text("Разрешить overlay в Android") }
+                    }
+                }
+
+                SettingsCard("Диагностика") {
+                    Text("Сохранять диагностические скриншоты")
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ModeButton("OFF", settings.debugMode == DebugCaptureMode.OFF) {
+                            scope.launch { settingsStore.setDebugPolicy(DebugCaptureMode.OFF, settings.retentionDays) }
+                        }
+                        ModeButton("Только ошибки", settings.debugMode == DebugCaptureMode.FAILURES) {
+                            scope.launch { settingsStore.setDebugPolicy(DebugCaptureMode.FAILURES, settings.retentionDays) }
+                        }
+                        ModeButton("Все цели", settings.debugMode == DebugCaptureMode.ALL_TARGETS) {
+                            scope.launch { settingsStore.setDebugPolicy(DebugCaptureMode.ALL_TARGETS, settings.retentionDays) }
+                        }
+                    }
+                    Text("Удалять диагностические скриншоты через")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(1, 3, 7).forEach { days ->
+                            val suffix = when (days) { 1 -> "день"; 3 -> "дня"; else -> "дней" }
+                            ModeButton("$days $suffix", settings.retentionDays == days) {
+                                scope.launch { settingsStore.setDebugPolicy(settings.debugMode, days) }
+                            }
+                        }
+                    }
+                    OutlinedButton(onClick = {
+                        val removed = DebugCaptureStore(this@MainActivity).deleteAll()
+                        RadarRuntime.update { it.copy(message = "Удалено debug-файлов: $removed") }
+                    }) { Text("Удалить диагностические данные") }
+                }
+
+                SettingsCard("Для разработчика") {
+                    ModeButton("Shadow Auto", settings.mode == RuntimeMode.SHADOW_AUTO) {
                         scope.launch { settingsStore.setMode(RuntimeMode.SHADOW_AUTO) }
                     }
+                    Text("Shadow Auto принимает policy-решения, но никогда не выполняет жесты.")
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ModeButton("Debug OFF", settings.debugMode == DebugCaptureMode.OFF) {
-                        scope.launch { settingsStore.setDebugPolicy(DebugCaptureMode.OFF, settings.retentionDays) }
-                    }
-                    ModeButton("Failures", settings.debugMode == DebugCaptureMode.FAILURES) {
-                        scope.launch { settingsStore.setDebugPolicy(DebugCaptureMode.FAILURES, settings.retentionDays) }
-                    }
-                    ModeButton("Targets", settings.debugMode == DebugCaptureMode.ALL_TARGETS) {
-                        scope.launch { settingsStore.setDebugPolicy(DebugCaptureMode.ALL_TARGETS, settings.retentionDays) }
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = {
-                        scope.launch { settingsStore.setDebugPolicy(settings.debugMode, settings.retentionDays - 1) }
-                    }) { Text("Retention −") }
-                    Text("${settings.retentionDays} дн.", modifier = Modifier.padding(top = 12.dp))
-                    OutlinedButton(onClick = {
-                        scope.launch { settingsStore.setDebugPolicy(settings.debugMode, settings.retentionDays + 1) }
-                    }) { Text("Retention +") }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ModeButton("L5", 5 in settings.selectedLevels) {
-                        scope.launch { settingsStore.setSelectedLevels(settings.selectedLevels.toggle(5)) }
-                    }
-                    ModeButton("L10", 10 in settings.selectedLevels) {
-                        scope.launch { settingsStore.setSelectedLevels(settings.selectedLevels.toggle(10)) }
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ModeButton("Звук", settings.soundEnabled) {
-                        scope.launch { settingsStore.setSoundEnabled(!settings.soundEnabled) }
-                    }
-                    ModeButton("Вибрация", settings.vibrationEnabled) {
-                        scope.launch { settingsStore.setVibrationEnabled(!settings.vibrationEnabled) }
-                    }
-                }
-                if (settings.selectedLevels.isEmpty()) {
-                    Text("Выберите хотя бы один уровень — пустой список ничего не отслеживает.", color = Color.Red)
-                }
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Text(status.message)
-                        Text("Экран: ${status.screen}")
-                        Text(
-                            "Кадры: ${status.framesAnalyzed} · очередь: ${status.framesDropped} · " +
-                                "rate-limit: ${status.framesThrottled}",
-                        )
-                        Text("Карточки: ${status.ralliesSeen} · eligible ${status.eligible} · non-target ${status.nonTarget}")
-                        Text("Full ${status.full} · unknown ${status.unknown} · alerts ${status.alertsEmitted}")
-                        Text("Shadow ${status.shadowSelections} · safety rejects ${status.safetyRejects}")
-                        Text(
-                            "Latency avg/p50/p95: ${status.averageLatencyMs ?: "—"}/" +
-                                "${status.p50LatencyMs ?: "—"}/${status.p95LatencyMs ?: "—"} мс",
-                        )
-                        Text("Длительность: ${status.sessionStartedAtEpochMs?.let { (System.currentTimeMillis() - it) / 1_000 } ?: 0} с")
-                    }
-                }
+
+                RuntimeCard(status)
+
                 if (!status.running) Button(onClick = {
                     if (Build.VERSION.SDK_INT >= 33 &&
                         checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
                     ) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                     projectionConsent.launch(getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent())
-                }) { Text("Запустить Radar") }
+                }) { Text("Запустить ${settings.mode.displayName()}") }
                 else OutlinedButton(onClick = { startService(RadarForegroundService.stopIntent(this@MainActivity)) }) {
                     Text("Остановить")
                 }
-                OutlinedButton(onClick = {
-                    val removed = DebugCaptureStore(this@MainActivity).deleteAll()
-                    RadarRuntime.update { it.copy(message = "Удалено debug-файлов: $removed") }
-                }) { Text("Удалить все debug данные") }
-                Text("Если размер, ориентация или viewport не совпадают с калибровкой, анализ ставится на паузу.")
+                Text("При смене ориентации, viewport или неизвестном экране анализ прекращается безопасно.")
             }
         }
+    }
+}
+
+@Composable
+private fun SettingsCard(title: String, content: @Composable () -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            content()
+        }
+    }
+}
+
+@Composable
+private fun RuntimeCard(status: RadarStatus) = SettingsCard("Состояние") {
+    Text(status.message)
+    Text("Режим: ${status.mode.displayName()} · экран: ${status.screen}")
+    Text("Кадры: ${status.framesAnalyzed} · очередь: ${status.framesDropped} · rate-limit: ${status.framesThrottled}")
+    Text("Найдено: ${status.ralliesSeen} · eligible: ${status.eligible} · уведомлений: ${status.alertsEmitted}")
+    Text("Non-target: ${status.nonTarget} · full: ${status.full} · unknown: ${status.unknown}")
+    Text("Shadow: ${status.shadowSelections} · пропущено policy: ${status.policySkipped} · safety rejects: ${status.safetyRejects}")
+    Text("Попытки: ${status.attempts} · успешно: ${status.successes} · неуспешно: ${status.failures}")
+    Text("Full before join: ${status.fullBeforeJoin} · no squad: ${status.noSquad} · too late: ${status.tooLate}")
+    Text("Vision reject: ${status.visionRejects} · safety abort: ${status.safetyAborts}")
+    Text(
+        "Latency avg/p50/p95: ${status.averageLatencyMs ?: "—"}/" +
+            "${status.p50LatencyMs ?: "—"}/${status.p95LatencyMs ?: "—"} мс",
+    )
+    Text("Длительность: ${status.sessionStartedAtEpochMs?.let { (System.currentTimeMillis() - it) / 1_000 } ?: 0} с")
+}
+
+@Composable
+private fun SettingSwitch(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, modifier = Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
+private fun ValueSlider(label: String, value: Int, range: IntRange, onValueChange: (Int) -> Unit) {
+    Column {
+        Text("$label: $value")
+        Slider(
+            value = value.toFloat(),
+            onValueChange = { onValueChange(it.roundToInt().coerceIn(range)) },
+            valueRange = range.first.toFloat()..range.last.toFloat(),
+            steps = (range.last - range.first - 1).coerceAtLeast(0),
+        )
+    }
+}
+
+@Composable
+private fun LevelToggle(level: Int, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Checkbox(checked = checked, onCheckedChange = onCheckedChange)
+        Text(level.toString())
     }
 }
 
@@ -160,4 +269,11 @@ private fun Set<Int>.toggle(value: Int): Set<Int> = if (value in this) this - va
 private fun ModeButton(label: String, selected: Boolean, onClick: () -> Unit) {
     if (selected) Button(onClick = onClick) { Text(label) }
     else OutlinedButton(onClick = onClick) { Text(label) }
+}
+
+private fun RuntimeMode.displayName(): String = when (this) {
+    RuntimeMode.RADAR -> "RADAR"
+    RuntimeMode.ONE_TAP -> "ONE_TAP"
+    RuntimeMode.AUTO -> "AUTO"
+    RuntimeMode.SHADOW_AUTO -> "SHADOW AUTO"
 }

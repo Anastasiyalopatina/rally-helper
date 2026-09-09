@@ -4,10 +4,15 @@ The following items require a connected physical Android device and must not be 
 
 - captured app-window geometry and resize callbacks;
 - system projection termination and resize callbacks;
-- long-run RSS, CPU, GC, temperature and battery impact;
+- final-release 60-minute RSS, CPU, GC, temperature and battery impact;
 - game/application FPS impact;
 - lifecycle behavior under lock, backgrounding, Battery Saver, popups and orientation changes;
 - real holdout precision/recall and false-actionable rate;
 - recorded multi-card, reorder, scroll and refresh sequences.
+- a live signal that distinguishes already-joined from other no-plus states;
+- labelled squad states beyond the existing unknown-only observations;
+- labelled travel times at approximately 3, 7, 12, 20+ and 60+ seconds;
+- redirect capability for a returning squad;
+- overlay behavior across vendor permission/lifecycle variants.
 
-Until these are measured, Phase B2 is incomplete and no input automation phase should begin.
+Until these are measured, `ONE_TAP` and `AUTO` input are locked. Unknown evidence always produces no action.
