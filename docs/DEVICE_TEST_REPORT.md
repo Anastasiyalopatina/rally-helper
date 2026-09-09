@@ -30,5 +30,33 @@ The final 60-minute run is intentionally deferred until a final release candidat
 
 - Room migrations 1→2, 2→3 and 1→3 preserve legacy session and observation records: PASS on a physical device.
 - Phase C2 APK compilation and installation-test path: PASS.
-- Functional 10-minute MediaProjection smoke for the eventual C2 commit: NOT_RUN.
-- Capture Lab OFF/ARMED latency comparison: NOT_RUN.
+- The Phase C2 application commit installed and launched cleanly on a physical device: PASS.
+
+## Phase C2 bounded smoke
+
+Application source commit under test: `c8029b2e1153a5bccf31a2d0988b0882489b7504`.
+
+The Shadow session ran for 1,051 seconds (17:31), analyzed 2,331 frames, dropped 0 frames from the latest-frame queue, and reported detector latency avg/p50/p95 of 59/52/68 ms. It produced 0 eligible decisions and 0 notifications on the available empty event state. Seven low-confidence candidates were rejected; none became actionable.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Real MediaProjection capture | PASS | Frame counters advanced continuously during the live session. |
+| Target application visible | PASS | A live event screen was captured locally; no image was retained in the repository. |
+| Event-list recognition | PASS | The available empty event screen was classified as `EVENT_LIST` with confidence 1.0 by the local frame inspector. |
+| Sound | NOT_RUN | No eligible live target was available. |
+| Vibration | NOT_RUN | No eligible live target was available. |
+| Overlay OFF | PASS | Session ran without an overlay window. |
+| Overlay ON | PASS | A separate application-overlay window was present; capture and analysis continued. |
+| Pause/Resume in Shadow | PASS | Pause preserved Radar capture; Resume returned to observation with no stale pending target. |
+| Mode-specific notification actions | PARTIAL | Shadow PAUSE/RESUME and STOP were exercised; non-auto action sets are code-verified only. |
+| Capture Lab OFF | PASS | A save request created no archive and the ring buffer remained disabled. |
+| Capture Lab ARMED | PASS | One local 19-frame, approximately five-second labelled archive was created and its manifest verified. |
+| Stop | PASS | The foreground service disappeared from the system service list. |
+
+The Capture Lab comparison is directional only, not a controlled benchmark. OFF produced 59/52/68 ms avg/p50/p95 over the long smoke. An earlier short ARMED observation produced 69/69/94 ms over 314 frames. Single CPU/RSS snapshots were noisy and are not reported as performance claims. Capture Lab therefore remains OFF by default.
+
+## Functional matrix status
+
+Only scenario H, an empty event list, was available during this validation window. It was captured and labelled locally; expected and actual behavior matched: event-list screen, no eligible target, and no alert. Scenarios A–G and I–M remain `NOT_RUN` because the live event supplied no rallies. Matrix completion is therefore 1/13, and the gate remains open.
+
+No independent rally holdout, eligible Shadow-decision set, squad-state set, travel-time set, or already-joined sequence could be collected from the empty live event. The 60-minute final-release test and lifecycle matrix were not started because their prerequisite functional gates are still open.

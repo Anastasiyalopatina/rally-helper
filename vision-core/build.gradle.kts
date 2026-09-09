@@ -50,6 +50,20 @@ tasks.register<JavaExec>("verifyCoreLogic") {
     mainClass.set("radar.vision.cli.CoreLogicChecksKt")
 }
 
+tasks.register<JavaExec>("inspectFrame") {
+    group = "verification"
+    description = "Inspects one local frame without retaining it in build outputs. Use -PframePath=/path/image.png."
+    dependsOn("cliClasses")
+    classpath = sourceSets["cli"].runtimeClasspath
+    mainClass.set("radar.vision.cli.InspectFrameKt")
+    val framePath = providers.gradleProperty("framePath")
+    doFirst { require(framePath.isPresent) { "-PframePath is required" } }
+    args(
+        framePath.orElse("").get(),
+        rootProject.layout.projectDirectory.file("app/src/main/assets/detector_templates.bin").asFile.absolutePath,
+    )
+}
+
 tasks.register<JavaExec>("compileRuntimeTemplates") {
     group = "build setup"
     description = "Compiles private calibration frames into a compact runtime feature asset."

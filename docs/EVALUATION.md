@@ -38,3 +38,9 @@ Synthetic mutations cover brightness, contrast, slight scale, translation, JPEG 
 | Frame drop rate | NOT_RUN |
 
 An intermediate device candidate completed a bounded smoke and a continuous RADAR stability run beyond 30 minutes without latest-frame queue drops. Exact device measurements are intentionally not published. This is not an independent holdout and did not exercise the required functional scenario matrix. Independent holdout, recorded sequences, 100 shadow decisions, and the final release-candidate endurance are not yet complete. See `DEVICE_TEST_REPORT.md`.
+
+## Phase C2 live observation
+
+One real empty-event scenario was retained locally as calibration evidence, not as an independent rally holdout. The detector classified the screen as `EVENT_LIST` with confidence 1.0. It rejected every weak decorative candidate: 0 eligible decisions, 0 alerts, and 0 false actionable targets in that single negative scenario. This observation is too small to publish precision, recall, or a false-actionable rate, so the metrics above remain `NOT_RUN`.
+
+The 17:31 Shadow smoke analyzed 2,331 frames with 0 queue drops and avg/p50/p95 latency of 59/52/68 ms. These runtime measurements do not substitute for labelled detector evaluation.
