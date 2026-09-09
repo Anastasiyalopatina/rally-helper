@@ -1,0 +1,12 @@
+.gradle/
+.idea/
+local.properties
+**/build/
+*.iml
+captures/
+vision-core/testdata/calibration/frames/
+local-testdata/
+live-captures/
+exported-sessions/
+raw-screen-recordings/
+*.screenrecord.mp4
