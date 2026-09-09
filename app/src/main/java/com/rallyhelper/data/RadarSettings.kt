@@ -29,6 +29,7 @@ data class RadarSettings(
     val minimumFreeSlots: Int = 1,
     val safetyMarginSeconds: Int = 3,
     val calibrationProfile: String = "reference-1280x2800-v2",
+    val captureLabArmed: Boolean = false,
 )
 
 class RadarSettingsStore(private val context: Context) {
@@ -51,6 +52,7 @@ class RadarSettingsStore(private val context: Context) {
             minimumFreeSlots = (values[Keys.MINIMUM_FREE_SLOTS] ?: 1).coerceAtLeast(1),
             safetyMarginSeconds = (values[Keys.SAFETY_MARGIN] ?: 3).coerceIn(0, MAX_SAFETY_MARGIN_SECONDS),
             calibrationProfile = values[Keys.CALIBRATION] ?: "reference-1280x2800-v2",
+            captureLabArmed = values[Keys.CAPTURE_LAB_ARMED] ?: false,
         ).normalized()
     }
 
@@ -107,6 +109,10 @@ class RadarSettingsStore(private val context: Context) {
         context.radarDataStore.edit { it[Keys.SAFETY_MARGIN] = value.coerceIn(0, MAX_SAFETY_MARGIN_SECONDS) }
     }
 
+    suspend fun setCaptureLabArmed(armed: Boolean) {
+        context.radarDataStore.edit { it[Keys.CAPTURE_LAB_ARMED] = armed }
+    }
+
     private object Keys {
         val LEVELS = stringPreferencesKey("selected_levels")
         val SOUND = booleanPreferencesKey("sound_enabled")
@@ -122,6 +128,7 @@ class RadarSettingsStore(private val context: Context) {
         val MINIMUM_FREE_SLOTS = intPreferencesKey("minimum_free_slots")
         val SAFETY_MARGIN = intPreferencesKey("safety_margin_seconds")
         val CALIBRATION = stringPreferencesKey("calibration_profile")
+        val CAPTURE_LAB_ARMED = booleanPreferencesKey("capture_lab_armed")
     }
 
     companion object {

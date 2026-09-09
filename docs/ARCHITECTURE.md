@@ -15,7 +15,9 @@ The ordinary product surface exposes `RADAR`, `ONE_TAP` and `AUTO`; `SHADOW_AUTO
 
 PAUSE cancels pending automation and requires a fresh frame after RESUME; it does not stop projection, Radar analysis or alerts. STOP ends the service. Incompatible geometry enters an explicit `NEEDS_CALIBRATION` lifecycle state.
 
-Room v3 stores session aggregates and meaningful state transitions. Capture Lab keeps a downscaled five-second ring buffer and can create a labelled ZIP with JSON metadata in private app storage only.
+Pending cancellation (disappearance, pause or leaving an auto mode) clears only that rally's sampled delay and is not a completed attempt; the current skip K is retained. A delay/skip settings change cancels pending work and deliberately starts a new policy cycle under the new ranges. A new MediaProjection session resets all policy state. Entering AUTO/SHADOW after another mode requires a fresh analyzed frame.
+
+Room v3 stores session aggregates and meaningful state transitions. Capture Lab defaults to OFF; only ARMED mode creates downscaled JPEG frames for its five-second ring. Labelled ZIP/JSON archives stay in private app storage until the user explicitly exports them through Android's system file picker.
 
 The optional compact overlay is a touchable `TYPE_APPLICATION_OVERLAY`, constrained to a safe left strip. Its known bounds are masked before CV analysis. RADAR continues normally when overlay permission or the setting is absent.
 

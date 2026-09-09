@@ -57,6 +57,7 @@ class ShadowAutoCoordinator(
     @Synchronized
     fun reset() {
         cancelPending()
+        policy.resetSession()
         processedWhileVisible.clear()
         paused = false
         resumeAfterFrameId = null
@@ -88,7 +89,7 @@ class ShadowAutoCoordinator(
             .toSet()
         pending?.let { scheduled ->
             if (scheduled.rallyId !in eligibleIds || scheduled.rallyId !in visibleIds) {
-                finishPending(scheduled.rallyId)
+                cancelPending()
                 processedWhileVisible += scheduled.rallyId
                 return snapshot(ShadowAutoPhase.INVALIDATED, scheduled.rallyId, reason = "target failed fresh-frame revalidation")
             }
@@ -133,7 +134,7 @@ class ShadowAutoCoordinator(
     }
 
     private fun cancelPending() {
-        pending?.let { policy.onAttemptFinished(it.rallyId) }
+        pending?.let { policy.onPendingCancelled(it.rallyId) }
         pending = null
     }
 

@@ -26,6 +26,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -41,6 +42,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -52,10 +55,12 @@ import com.rallyhelper.data.RadarRepository
 import com.rallyhelper.data.RadarSession
 import com.rallyhelper.data.RallyObservation
 import com.rallyhelper.debug.CaptureLabLabel
+import com.rallyhelper.debug.CaptureLabStore
 import com.rallyhelper.debug.DebugCaptureStore
 import kotlinx.coroutines.launch
 import radar.vision.RuntimeMode
 import kotlin.math.roundToInt
+import java.io.File
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -78,9 +83,29 @@ class MainActivity : ComponentActivity() {
             historyRepository.observeSessionEvents(selectedSessionId ?: -1L)
         }
         val selectedEvents by selectedEventsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
-        var captureLabel by remember { mutableStateOf(CaptureLabLabel.UNKNOWN) }
+        var captureLabel by remember { mutableStateOf(CaptureLabLabel.UNKNOWN_UI) }
+        var captureValueText by remember { mutableStateOf("") }
+        val captureLabFiles = remember { CaptureLabStore(this@MainActivity) }
+        var pendingExportPath by remember { mutableStateOf<String?>(null) }
         val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
         val overlayPermission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {}
+        val captureExport = rememberLauncherForActivityResult(
+            ActivityResultContracts.CreateDocument("application/zip"),
+        ) { destination ->
+            val source = pendingExportPath?.let(::File)
+            if (destination != null && source?.isFile == true) {
+                runCatching {
+                    contentResolver.openOutputStream(destination)?.use { output ->
+                        source.inputStream().buffered().use { input -> input.copyTo(output) }
+                    } ?: error("Cannot open export destination")
+                }.onSuccess {
+                    RadarRuntime.update { it.copy(message = "Capture Lab экспортирован локально") }
+                }.onFailure { error ->
+                    RadarRuntime.update { it.copy(message = "Ошибка Capture Lab export: ${error.javaClass.simpleName}") }
+                }
+            }
+            pendingExportPath = null
+        }
         val projectionConsent = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             val data = result.data
             if (result.resultCode == Activity.RESULT_OK && data != null) {
@@ -212,20 +237,60 @@ class MainActivity : ComponentActivity() {
                         scope.launch { settingsStore.setMode(RuntimeMode.SHADOW_AUTO) }
                     }
                     Text("Shadow Auto принимает policy-решения, но никогда не выполняет жесты.")
+                    SettingSwitch(
+                        "Capture Lab: ${if (settings.captureLabArmed) "ARMED" else "OFF"}",
+                        settings.captureLabArmed,
+                    ) { armed -> scope.launch { settingsStore.setCaptureLabArmed(armed) } }
                     Text("Capture Lab: ${captureLabel.name}")
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = {
                             val labels = CaptureLabLabel.values()
                             captureLabel = labels[(captureLabel.ordinal + 1) % labels.size]
                         }) { Text("Сменить метку") }
+                    }
+                    if (captureLabel == CaptureLabLabel.TRAVEL_TIME || captureLabel == CaptureLabLabel.RALLY_COUNTDOWN) {
+                        OutlinedTextField(
+                            value = captureValueText,
+                            onValueChange = { captureValueText = it.filter(Char::isDigit).take(4) },
+                            label = { Text("Ground truth, секунд") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
-                            enabled = status.running,
+                            enabled = status.running && settings.captureLabArmed && (
+                                captureLabel !in setOf(CaptureLabLabel.TRAVEL_TIME, CaptureLabLabel.RALLY_COUNTDOWN) ||
+                                    captureValueText.toIntOrNull() != null
+                                ),
                             onClick = {
-                                startService(RadarForegroundService.captureLabIntent(this@MainActivity, captureLabel))
+                                startService(
+                                    RadarForegroundService.captureLabIntent(
+                                        this@MainActivity,
+                                        captureLabel,
+                                        captureValueText.toIntOrNull(),
+                                    ),
+                                )
                             },
                         ) { Text("Сохранить 5 секунд") }
                     }
-                    Text("ZIP + JSON сохраняются только в закрытом хранилище приложения; отправки в сеть нет.")
+                    OutlinedButton(onClick = {
+                        val bundle = captureLabFiles.createExportBundle()
+                        if (bundle == null) {
+                            RadarRuntime.update { it.copy(message = "Нет Capture Lab архивов для экспорта") }
+                        } else {
+                            pendingExportPath = bundle.absolutePath
+                            captureExport.launch("rally-helper-capture-lab.zip")
+                        }
+                    }) { Text("Экспортировать последние Capture Lab архивы") }
+                    OutlinedButton(onClick = {
+                        val removed = captureLabFiles.deleteAll()
+                        RadarRuntime.update { it.copy(message = "Удалено Capture Lab архивов: $removed") }
+                    }) { Text("Удалить Capture Lab данные") }
+                    Text(
+                        "При OFF кадры и JPEG не создаются. После сохранения режим остаётся ARMED. " +
+                            "Экспорт выполняется через системный выбор файла без сети.",
+                    )
                 }
 
                 RuntimeCard(status)

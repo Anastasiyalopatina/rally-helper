@@ -14,5 +14,6 @@ The following items require a connected physical Android device and must not be 
 - labelled travel times at approximately 3, 7, 12, 20+ and 60+ seconds;
 - redirect capability for a returning squad;
 - overlay behavior across vendor permission/lifecycle variants.
+- Capture Lab OFF versus ARMED CPU and latency delta on the final C2 build;
 
 Until these are measured, `ONE_TAP` and `AUTO` input are locked. Unknown evidence always produces no action.

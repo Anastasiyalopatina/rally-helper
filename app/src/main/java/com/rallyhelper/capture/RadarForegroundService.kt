@@ -144,8 +144,10 @@ class RadarForegroundService : Service() {
         if (intent?.action == ACTION_CAPTURE_LAB) {
             val label = intent.getStringExtra(EXTRA_CAPTURE_LABEL)
                 ?.let { runCatching { CaptureLabLabel.valueOf(it) }.getOrNull() }
-                ?: CaptureLabLabel.UNKNOWN
-            val archive = captureLabStore.save(label)
+                ?: CaptureLabLabel.UNKNOWN_UI
+            val optionalIntValue = intent.getIntExtra(EXTRA_CAPTURE_VALUE, Int.MIN_VALUE)
+                .takeUnless { it == Int.MIN_VALUE }
+            val archive = captureLabStore.save(label, optionalIntValue)
             RadarRuntime.update {
                 it.copy(message = archive?.let { file -> "Capture Lab сохранён локально: ${file.name}" }
                     ?: "Capture Lab: буфер пока пуст")
@@ -171,6 +173,7 @@ class RadarForegroundService : Service() {
     }
 
     private fun applySettings(updated: RadarSettings) {
+        val previous = settings.get()
         settings.set(updated)
         val policyConfig = AutoPolicyConfig(
             delayMinSeconds = updated.delayMinSeconds,
@@ -181,6 +184,27 @@ class RadarForegroundService : Service() {
         if (policyConfig != appliedAutoConfig) {
             shadowCoordinator.updateConfig(policyConfig)
             appliedAutoConfig = policyConfig
+        }
+        captureLabStore.setArmed(updated.captureLabArmed)
+        if (previous.mode.isAutoLoop() && !updated.mode.isAutoLoop()) {
+            shadowCoordinator.pause()
+            automationPaused = false
+            RadarRuntime.update {
+                it.copy(
+                    lifecycle = if (it.running) RuntimeLifecycle.RUNNING else it.lifecycle,
+                    shadowPhase = ShadowAutoPhase.IDLE.name,
+                    shadowDelayRemainingSeconds = null,
+                    message = "Auto policy отменена при смене режима; ожидается новый цикл",
+                )
+            }
+            val current = RadarRuntime.status.value
+            overlay.update(
+                updated.mode,
+                null,
+                OverlayCounters(current.successes, current.failures, current.policySkipped, current.shadowSelections),
+            )
+        } else if (!previous.mode.isAutoLoop() && updated.mode.isAutoLoop()) {
+            shadowCoordinator.resume(lastAnalyzedFrameId)
         }
         overlay.setEnabled(updated.overlayEnabled)
         RadarRuntime.update { it.copy(mode = updated.mode) }
@@ -238,7 +262,7 @@ class RadarForegroundService : Service() {
         overlay.update(
             current.mode,
             null,
-            OverlayCounters(current.successes, current.failures, current.policySkipped),
+            OverlayCounters(current.successes, current.failures, current.policySkipped, current.shadowSelections),
             OverlayAutomationState(value, current.shadowPhase, null),
         )
         getSystemService(NotificationManager::class.java).notify(
@@ -380,9 +404,11 @@ class RadarForegroundService : Service() {
                     val observedMs = android.os.SystemClock.elapsedRealtime()
                     val analysis = detector.analyze(argbImage, frameIds.incrementAndGet(), observedMs)
                     lastAnalyzedFrameId = analysis.frameId
-                    frameBuffer.snapshotDownscaled().also { small ->
-                        captureLabStore.add(small, analysis.frameId, observedMs)
-                        small.recycle()
+                    if (currentSettings.captureLabArmed) {
+                        frameBuffer.snapshotDownscaled().also { small ->
+                            captureLabStore.add(small, analysis.frameId, observedMs)
+                            small.recycle()
+                        }
                     }
                     if (analysis.screen == ScreenState.UNKNOWN) recordAbortOnce("screen:UNKNOWN") else lastAbortReason = null
                     val tracking = tracker.update(analysis)
@@ -441,9 +467,10 @@ class RadarForegroundService : Service() {
                         currentSettings.mode,
                         overlayRally,
                         OverlayCounters(
-                            success = shadowUpdate.virtualAttempts.toLong(),
-                            failed = RadarRuntime.status.value.failures,
+                            realSuccess = RadarRuntime.status.value.successes,
+                            realFailed = RadarRuntime.status.value.failures,
                             skipped = shadowUpdate.policySkips.toLong(),
+                            shadowWouldAttempt = shadowUpdate.virtualAttempts.toLong(),
                         ),
                         OverlayAutomationState(automationPaused, shadowUpdate.phase.name, delayRemaining),
                     )
@@ -688,23 +715,24 @@ class RadarForegroundService : Service() {
         val stop = PendingIntent.getService(
             this, 2, stopIntent(this), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val automationAction = PendingIntent.getService(
-            this,
-            3,
-            Intent(this, RadarForegroundService::class.java).setAction(
-                if (automationPaused) ACTION_RESUME else ACTION_PAUSE,
-            ),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .setContentTitle("Rally Helper")
             .setContentText(text)
             .setOngoing(true)
             .setContentIntent(open)
-            .addAction(0, if (automationPaused) "Возобновить" else "Пауза авто", automationAction)
-            .addAction(0, "Остановить", stop)
-            .build()
+        if (settings.get().mode.isAutoLoop()) {
+            val automationAction = PendingIntent.getService(
+                this,
+                3,
+                Intent(this, RadarForegroundService::class.java).setAction(
+                    if (automationPaused) ACTION_RESUME else ACTION_PAUSE,
+                ),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            builder.addAction(0, if (automationPaused) "Возобновить" else "Пауза авто", automationAction)
+        }
+        return builder.addAction(0, "Остановить", stop).build()
     }
 
     private fun createNotificationChannel() {
@@ -731,6 +759,7 @@ class RadarForegroundService : Service() {
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_RESULT_DATA = "result_data"
         private const val EXTRA_CAPTURE_LABEL = "capture_label"
+        private const val EXTRA_CAPTURE_VALUE = "capture_value"
         private const val CHANNEL_ID = "radar"
         private const val NOTIFICATION_ID = 42
 
@@ -740,11 +769,14 @@ class RadarForegroundService : Service() {
 
         fun stopIntent(context: Context) = Intent(context, RadarForegroundService::class.java).setAction(ACTION_STOP)
 
-        fun captureLabIntent(context: Context, label: CaptureLabLabel) =
+        fun captureLabIntent(context: Context, label: CaptureLabLabel, optionalIntValue: Int?) =
             Intent(context, RadarForegroundService::class.java).setAction(ACTION_CAPTURE_LAB)
                 .putExtra(EXTRA_CAPTURE_LABEL, label.name)
+                .apply { optionalIntValue?.let { putExtra(EXTRA_CAPTURE_VALUE, it) } }
     }
 }
+
+private fun RuntimeMode.isAutoLoop(): Boolean = this == RuntimeMode.AUTO || this == RuntimeMode.SHADOW_AUTO
 
 private fun List<Long>.percentile(fraction: Double): Long? {
     if (isEmpty()) return null

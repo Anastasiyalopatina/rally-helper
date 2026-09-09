@@ -58,6 +58,19 @@ class AutoPolicy(
         eligibleSkipsRemaining = sample(config.skipMin, config.skipMax)
     }
 
+    /** Cancels only a scheduled delay. It is not a completed attempt and does not resample skip K. */
+    @Synchronized
+    fun onPendingCancelled(rallyId: RallyId) {
+        delaysByRally.remove(rallyId)
+    }
+
+    /** Starts an independent policy cycle without changing the current configuration. */
+    @Synchronized
+    fun resetSession() {
+        delaysByRally.clear()
+        eligibleSkipsRemaining = sample(config.skipMin, config.skipMax)
+    }
+
     /** Non-eligible observations deliberately do not consume the counter. */
     fun onRejected() = Unit
 

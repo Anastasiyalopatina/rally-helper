@@ -18,7 +18,12 @@ import radar.vision.NormalizedRect
 import radar.vision.RallyCandidate
 import radar.vision.RuntimeMode
 
-internal data class OverlayCounters(val success: Long, val failed: Long, val skipped: Long)
+internal data class OverlayCounters(
+    val realSuccess: Long,
+    val realFailed: Long,
+    val skipped: Long,
+    val shadowWouldAttempt: Long,
+)
 
 internal data class OverlayAutomationState(
     val paused: Boolean = false,
@@ -66,7 +71,11 @@ internal class RallyOverlayController(
                 rally != null -> rally.remainingSeconds?.let(::clock) ?: automation.phase
                 else -> automation.phase
             }
-            counters?.text = "✓ ${values.success}   ✕ ${values.failed}   ↷ ${values.skipped}"
+            counters?.text = if (mode == RuntimeMode.SHADOW_AUTO) {
+                "◇ ${values.shadowWouldAttempt} simulated   ↷ ${values.skipped}"
+            } else {
+                "✓ ${values.realSuccess}   ✕ ${values.realFailed}   ↷ ${values.skipped}"
+            }
             action?.apply {
                 visibility = when (mode) {
                     RuntimeMode.ONE_TAP, RuntimeMode.AUTO, RuntimeMode.SHADOW_AUTO -> View.VISIBLE

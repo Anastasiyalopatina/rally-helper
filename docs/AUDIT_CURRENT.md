@@ -18,6 +18,8 @@ Audited scope: the tree currently checked out from `main` plus the product-mode 
 - Material 3 range controls shown only for AUTO/SHADOW;
 - local current/history session UI and Room v3 meaningful-transition records;
 - private five-second Capture Lab ring buffer with labelled ZIP/JSON export;
+- Capture Lab OFF/ARMED gating, extended ground-truth labels and Storage Access Framework export;
+- Room migration regressions for 1→2, 2→3 and 1→3, executed on a physical device;
 - debug-capture-only retention with defaults `FAILURES` and three days;
 - compact runtime templates, no raw calibration images in the APK, and reusable capture buffers;
 - Room sessions, observations, decisions, aborts, transition and policy metadata;

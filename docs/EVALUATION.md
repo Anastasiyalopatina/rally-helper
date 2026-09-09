@@ -15,6 +15,9 @@
 | Monotonic delay + fresh-frame revalidation | pass |
 | Pause cancels pending target and resumes fresh | pass |
 | Relaxed alert cannot authorize action | pass |
+| Pending cancellation is not a completed attempt | pass |
+| Policy state resets between sessions | pass |
+| Room migrations 1→2 / 2→3 / 1→3 | 3/3 pass on physical device |
 | Raw screenshots in debug APK | 0 |
 | Android compile / lint | pass |
 | Room schema export | v3 |

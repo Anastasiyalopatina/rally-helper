@@ -25,3 +25,10 @@ This was an intermediate engineering check, not a final release qualification. E
 | AUTO live runs | BLOCKED by earlier gates |
 
 The final 60-minute run is intentionally deferred until a final release candidate. Phase C changes require a new short functional smoke and labelled scenario matrix before either input mode can be considered.
+
+## Phase C2 preparation
+
+- Room migrations 1→2, 2→3 and 1→3 preserve legacy session and observation records: PASS on a physical device.
+- Phase C2 APK compilation and installation-test path: PASS.
+- Functional 10-minute MediaProjection smoke for the eventual C2 commit: NOT_RUN.
+- Capture Lab OFF/ARMED latency comparison: NOT_RUN.

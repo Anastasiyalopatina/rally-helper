@@ -168,6 +168,27 @@ fun main() {
         "Resume must reject the pre-resume frame"
     }
 
+    val cancellationPolicy = AutoPolicy(AutoPolicyConfig(2, 2, 1, 1), Random(3))
+    check(cancellationPolicy.onEligible(RallyId("skip-a")) is AutoPolicyDecision.Skip)
+    val pendingA = cancellationPolicy.onEligible(RallyId("pending-a")) as AutoPolicyDecision.Wait
+    cancellationPolicy.onPendingCancelled(pendingA.rallyId)
+    check(cancellationPolicy.onEligible(RallyId("pending-b")) is AutoPolicyDecision.Wait) {
+        "Cancelling pending work must not resample skip K"
+    }
+    cancellationPolicy.resetSession()
+    val sessionB = cancellationPolicy.onEligible(RallyId("session-b")) as AutoPolicyDecision.Skip
+    check(sessionB.remainingEligibleSkips == 0) { "A new session must start an independent policy cycle" }
+
+    val resetConfig = AutoPolicyConfig(0, 0, 2, 2)
+    val resetCoordinator = ShadowAutoCoordinator(resetConfig, AutoPolicy(resetConfig, Random(9)))
+    val sessionAFirst = resetCoordinator.onFrame(priorityFrame, priorityTracks, priorityDecisions)
+    check(sessionAFirst.phase == ShadowAutoPhase.SKIPPED && sessionAFirst.policySkips == 1)
+    resetCoordinator.reset()
+    val sessionBFirst = resetCoordinator.onFrame(priorityFrame, priorityTracks, priorityDecisions)
+    check(sessionBFirst.phase == ShadowAutoPhase.SKIPPED && sessionBFirst.policySkips == 1) {
+        "Coordinator reset must restore a fresh skip K instead of leaking partially consumed session state"
+    }
+
     val relaxedCandidate = candidate(upper, 1, 30).copy(
         participantCount = null,
         capacity = null,
