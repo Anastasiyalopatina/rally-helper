@@ -5,8 +5,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import radar.vision.RuntimeMode
 import radar.vision.ScreenState
 
+enum class RuntimeLifecycle { STOPPED, RUNNING, AUTOMATION_PAUSED, NEEDS_CALIBRATION }
+
 data class RadarStatus(
     val running: Boolean = false,
+    val lifecycle: RuntimeLifecycle = RuntimeLifecycle.STOPPED,
     val mode: RuntimeMode = RuntimeMode.RADAR,
     val screen: ScreenState = ScreenState.UNKNOWN,
     val framesAnalyzed: Long = 0,
@@ -22,6 +25,8 @@ data class RadarStatus(
     val alertsEmitted: Long = 0,
     val shadowSelections: Long = 0,
     val policySkipped: Long = 0,
+    val shadowPhase: String = "IDLE",
+    val shadowDelayRemainingSeconds: Int? = null,
     val attempts: Long = 0,
     val successes: Long = 0,
     val failures: Long = 0,
@@ -43,5 +48,15 @@ object RadarRuntime {
 
     fun update(block: (RadarStatus) -> RadarStatus) {
         mutable.value = block(mutable.value)
+    }
+
+    fun resetForSession(mode: RuntimeMode, startedAtEpochMs: Long = System.currentTimeMillis()) {
+        mutable.value = RadarStatus(
+            running = true,
+            lifecycle = RuntimeLifecycle.RUNNING,
+            mode = mode,
+            sessionStartedAtEpochMs = startedAtEpochMs,
+            message = "Запуск локального анализа…",
+        )
     }
 }

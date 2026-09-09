@@ -1,6 +1,6 @@
 # Device test status
 
-Date: 2026-09-09.
+Date: 2026-09-10.
 
 ## Intermediate candidate
 
@@ -23,3 +23,5 @@ This was an intermediate engineering check, not a final release qualification. E
 | Final-release 60-minute endurance | DEFERRED |
 | ONE_TAP live sequences | BLOCKED by earlier gates and missing evidence |
 | AUTO live runs | BLOCKED by earlier gates |
+
+The final 60-minute run is intentionally deferred until a final release candidate. Phase C changes require a new short functional smoke and labelled scenario matrix before either input mode can be considered.

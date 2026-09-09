@@ -10,3 +10,5 @@ live-captures/
 exported-sessions/
 raw-screen-recordings/
 *.screenrecord.mp4
+capture-lab/
+device-private/

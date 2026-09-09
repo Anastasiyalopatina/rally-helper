@@ -8,12 +8,20 @@ import androidx.room.Insert
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.RoomDatabase
+import kotlinx.coroutines.flow.Flow
 
 @Entity data class RadarSession(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val startedAtEpochMs: Long,
     val endedAtEpochMs: Long? = null,
     val calibrationProfileId: String,
+    @ColumnInfo(defaultValue = "'RADAR'") val mode: String = "RADAR",
+    @ColumnInfo(defaultValue = "0") val framesAnalyzed: Long = 0,
+    @ColumnInfo(defaultValue = "0") val eligible: Long = 0,
+    @ColumnInfo(defaultValue = "0") val attempts: Long = 0,
+    @ColumnInfo(defaultValue = "0") val successes: Long = 0,
+    @ColumnInfo(defaultValue = "0") val failures: Long = 0,
+    @ColumnInfo(defaultValue = "0") val policySkipped: Long = 0,
 )
 
 @Entity data class RallyObservation(
@@ -21,6 +29,7 @@ import androidx.room.RoomDatabase
     val sessionId: Long,
     val rallyId: String,
     val observedAtMonotonicMs: Long,
+    @ColumnInfo(defaultValue = "0") val firstSeenMonotonicMs: Long,
     @ColumnInfo(defaultValue = "0") val observedAtEpochMs: Long,
     val boss: String,
     val level: Int?,
@@ -35,6 +44,8 @@ import androidx.room.RoomDatabase
     val travelTimeSeconds: Int? = null,
     val result: String? = null,
     val failureReason: String? = null,
+    @ColumnInfo(defaultValue = "'UNKNOWN'") val joinedState: String = "UNKNOWN",
+    @ColumnInfo(defaultValue = "'OBSERVED'") val eventType: String = "OBSERVED",
 )
 
 @Entity data class DetectorDecisionRecord(
@@ -57,13 +68,30 @@ import androidx.room.RoomDatabase
     @Insert suspend fun insertObservation(value: RallyObservation): Long
     @Insert suspend fun insertDecision(value: DetectorDecisionRecord): Long
     @Insert suspend fun insertAbort(value: SafetyAbort): Long
-    @Query("UPDATE RadarSession SET endedAtEpochMs = :endedAtEpochMs WHERE id = :sessionId")
-    suspend fun endSession(sessionId: Long, endedAtEpochMs: Long)
+    @Query(
+        "UPDATE RadarSession SET endedAtEpochMs = :endedAtEpochMs, framesAnalyzed = :frames, " +
+            "eligible = :eligible, attempts = :attempts, successes = :successes, failures = :failures, " +
+            "policySkipped = :skipped WHERE id = :sessionId",
+    )
+    suspend fun endSession(
+        sessionId: Long,
+        endedAtEpochMs: Long,
+        frames: Long,
+        eligible: Long,
+        attempts: Long,
+        successes: Long,
+        failures: Long,
+        skipped: Long,
+    )
+    @Query("SELECT * FROM RadarSession ORDER BY startedAtEpochMs DESC LIMIT :limit")
+    fun observeRecentSessions(limit: Int = 25): Flow<List<RadarSession>>
+    @Query("SELECT * FROM RallyObservation WHERE sessionId = :sessionId ORDER BY observedAtEpochMs DESC")
+    fun observeSessionEvents(sessionId: Long): Flow<List<RallyObservation>>
 }
 
 @Database(
     entities = [RadarSession::class, RallyObservation::class, DetectorDecisionRecord::class, SafetyAbort::class],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class RadarDatabase : RoomDatabase() {

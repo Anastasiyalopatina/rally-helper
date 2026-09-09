@@ -17,8 +17,12 @@ import radar.vision.RallyTracker
 import radar.vision.ScreenState
 import radar.vision.DecisionKind
 import radar.vision.RuntimeMode
+import radar.vision.RadarAlertPolicy
 import radar.vision.SafetyController
 import radar.vision.SafetyPolicy
+import radar.vision.ShadowAutoCoordinator
+import radar.vision.ShadowAutoPhase
+import radar.vision.TargetSelector
 import radar.vision.TransitionResult
 import kotlin.random.Random
 
@@ -109,9 +113,8 @@ fun main() {
     machine.dispatch(AutomationEvent.Pause, 110)
     check(machine.current.state == AutomationState.PAUSED)
     machine.dispatch(AutomationEvent.Resume, 120)
-    check(machine.current.state == AutomationState.TARGET_DETECTED)
-    check(machine.dispatch(AutomationEvent.DelayElapsed(6), 130) is TransitionResult.Rejected)
-    check(machine.dispatch(AutomationEvent.DelayElapsed(7), 130) is TransitionResult.Accepted)
+    check(machine.current.state == AutomationState.IDLE) { "Resume must start a fresh detection cycle" }
+    check(machine.dispatch(AutomationEvent.DelayElapsed(7), 130) is TransitionResult.Rejected)
 
     val autoPolicy = AutoPolicy(AutoPolicyConfig(delayMinSeconds = 2, delayMaxSeconds = 4, skipMin = 1, skipMax = 1), Random(7))
     val skipped = autoPolicy.onEligible(RallyId("skip"))
@@ -127,9 +130,61 @@ fun main() {
     check(reconfigured is AutoPolicyDecision.Skip && reconfigured.remainingEligibleSkips == 1) {
         "A live range change must resample K inside the new range"
     }
+
+    val priorityTracker = RallyTracker()
+    priorityTracker.update(frame(30, listOf(candidate(upper, 1, 30, level = 5), candidate(lower, 1, 55, level = 10))))
+    val priorityFrame = frame(31, listOf(candidate(upper, 2, 29, level = 5), candidate(lower, 2, 54, level = 10)))
+    val priorityTracks = priorityTracker.update(priorityFrame)
+    val priorityDecisions = SafetyController().decide(RuntimeMode.SHADOW_AUTO, priorityFrame, priorityTracks)
+    check(TargetSelector().select(priorityFrame.frameId, priorityTracks, priorityDecisions)?.candidate?.level == 10) {
+        "Higher configured target level must win deterministic selection"
+    }
+
+    val coordinator = ShadowAutoCoordinator(
+        AutoPolicyConfig(delayMinSeconds = 2, delayMaxSeconds = 2, skipMin = 0, skipMax = 0),
+        AutoPolicy(AutoPolicyConfig(2, 2, 0, 0), Random(1)),
+    )
+    val scheduled = coordinator.onFrame(priorityFrame, priorityTracks, priorityDecisions)
+    check(scheduled.phase == ShadowAutoPhase.WAITING_DELAY && scheduled.delaySeconds == 2)
+    val beforeDueFrame = priorityFrame.copy(frameId = 32, observedAtMonotonicMs = priorityFrame.observedAtMonotonicMs + 1_000)
+    val beforeDueTracks = priorityTracks.copy(active = priorityTracks.active.map {
+        it.copy(lastSeenFrameId = beforeDueFrame.frameId, lastSeenMonotonicMs = beforeDueFrame.observedAtMonotonicMs)
+    })
+    check(coordinator.onFrame(beforeDueFrame, beforeDueTracks, priorityDecisions).phase == ShadowAutoPhase.WAITING_DELAY)
+    val dueFrame = beforeDueFrame.copy(frameId = 33, observedAtMonotonicMs = priorityFrame.observedAtMonotonicMs + 2_000)
+    val dueTracks = beforeDueTracks.copy(active = beforeDueTracks.active.map {
+        it.copy(lastSeenFrameId = dueFrame.frameId, lastSeenMonotonicMs = dueFrame.observedAtMonotonicMs)
+    })
+    val dueDecisions = SafetyController().decide(RuntimeMode.SHADOW_AUTO, dueFrame, dueTracks)
+    check(coordinator.onFrame(dueFrame, dueTracks, dueDecisions).phase == ShadowAutoPhase.WOULD_START_JOIN_FLOW)
+    check(coordinator.onFrame(dueFrame, dueTracks, dueDecisions).virtualAttempts == 1) { "Visible rally must be processed once" }
+
+    coordinator.reset()
+    coordinator.onFrame(priorityFrame, priorityTracks, priorityDecisions)
+    coordinator.pause()
+    check(coordinator.onFrame(dueFrame, dueTracks, dueDecisions).phase == ShadowAutoPhase.PAUSED)
+    coordinator.resume(dueFrame.frameId)
+    check(coordinator.onFrame(dueFrame, dueTracks, dueDecisions).phase == ShadowAutoPhase.IDLE) {
+        "Resume must reject the pre-resume frame"
+    }
+
+    val relaxedCandidate = candidate(upper, 1, 30).copy(
+        participantCount = null,
+        capacity = null,
+        joinedState = JoinedState.UNKNOWN,
+        confidences = RallyConfidences(1f, .95f, .9f, .1f, .85f, 1f),
+    )
+    val relaxedTrack = RallyTracker()
+    relaxedTrack.update(frame(40, listOf(relaxedCandidate)))
+    val relaxedFrame = frame(41, listOf(relaxedCandidate))
+    val relaxedTracks = relaxedTrack.update(relaxedFrame)
+    check(RadarAlertPolicy().decide(relaxedFrame, relaxedTracks).single().kind == DecisionKind.WOULD_SELECT)
+    check(SafetyController().decide(RuntimeMode.SHADOW_AUTO, relaxedFrame, relaxedTracks).single().kind == DecisionKind.REJECT) {
+        "Relaxed radar evidence must never authorize an action"
+    }
     println(
         "PASS stale-track action guard; PASS duplicate/reorder identity; " +
-            "PASS out-of-policy/free-slot/travel guards; PASS deterministic auto policy; " +
-            "PASS explicit transitions/pause/flow-id guard",
+            "PASS alert/action policy split; PASS deterministic single-flight shadow coordinator; " +
+            "PASS out-of-policy/free-slot/travel guards; PASS explicit transitions/pause/flow-id guard",
     )
 }

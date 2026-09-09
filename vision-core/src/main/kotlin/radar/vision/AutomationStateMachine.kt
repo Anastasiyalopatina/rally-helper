@@ -66,24 +66,19 @@ class AutomationStateMachine(
 ) {
     var current: Transition = Transition(initial)
         private set
-    private var stateBeforePause: Transition? = null
-
     @Synchronized
     fun dispatch(event: AutomationEvent, nowMonotonicMs: Long): TransitionResult {
         val previous = current
         if (event is AutomationEvent.Reset) {
             current = Transition(AutomationState.IDLE)
-            stateBeforePause = null
             return TransitionResult.Accepted(previous, current)
         }
         if (event is AutomationEvent.Pause && current.state != AutomationState.PAUSED) {
-            stateBeforePause = current
-            current = Transition(AutomationState.PAUSED, current.context)
+            current = Transition(AutomationState.PAUSED)
             return TransitionResult.Accepted(previous, current)
         }
         if (event is AutomationEvent.Resume && current.state == AutomationState.PAUSED) {
-            current = stateBeforePause ?: Transition(AutomationState.IDLE)
-            stateBeforePause = null
+            current = Transition(AutomationState.IDLE)
             return TransitionResult.Accepted(previous, current)
         }
         if (event is AutomationEvent.Abort) {

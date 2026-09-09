@@ -24,6 +24,12 @@ class RallyTracker(
     private var nextId = 1L
 
     @Synchronized
+    fun reset() {
+        tracks.clear()
+        nextId = 1L
+    }
+
+    @Synchronized
     fun update(frame: FrameAnalysis): TrackingUpdate {
         val now = frame.observedAtMonotonicMs
         val previousFrameTracks = tracks.values.filter { it.presentInCurrentFrame }

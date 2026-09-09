@@ -24,29 +24,35 @@ import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import com.rallyhelper.MainActivity
 import com.rallyhelper.RadarRuntime
+import com.rallyhelper.RuntimeLifecycle
 import com.rallyhelper.data.DebugCaptureMode
 import com.rallyhelper.data.RadarRepository
 import com.rallyhelper.data.RadarSettings
 import com.rallyhelper.data.RadarSettingsStore
 import com.rallyhelper.debug.DebugCaptureStore
+import com.rallyhelper.debug.CaptureLabLabel
+import com.rallyhelper.debug.CaptureLabStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import radar.vision.BossType
-import radar.vision.AutoPolicy
 import radar.vision.AutoPolicyConfig
-import radar.vision.AutoPolicyDecision
 import radar.vision.CalibrationProfile
 import radar.vision.DecisionKind
 import radar.vision.JoinedState
 import radar.vision.RallyTracker
+import radar.vision.RadarAlertPolicy
 import radar.vision.RuntimeMode
 import radar.vision.SafetyPolicy
 import radar.vision.SafetyController
+import radar.vision.ShadowAutoCoordinator
+import radar.vision.ShadowAutoPhase
+import radar.vision.ShadowAutoUpdate
 import radar.vision.ScreenState
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -64,18 +70,19 @@ class RadarForegroundService : Service() {
     private val calibration = CalibrationProfile()
     private val detector by lazy { RadarDetectorFactory.create(applicationContext) }
     private val debugStore by lazy { DebugCaptureStore(applicationContext) }
+    private val captureLabStore by lazy { CaptureLabStore(applicationContext) }
     private val settingsStore by lazy { RadarSettingsStore(applicationContext) }
     private val repository by lazy { RadarRepository.create(applicationContext) }
     private val overlay by lazy {
         RallyOverlayController(
             applicationContext,
             onJoinRequested = ::handleJoinRequested,
-            onPauseRequested = { stopSelf() },
+            onPauseRequested = ::toggleAutomationPause,
         )
     }
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val settings = AtomicReference(RadarSettings())
-    private val autoPolicy = AutoPolicy()
+    private val shadowCoordinator = ShadowAutoCoordinator()
     private var appliedAutoConfig = AutoPolicyConfig()
     private val frameBuffer = ScreenCaptureController.Companion.ReusableFrameBuffer()
     private val alertSound by lazy { LocalAlertSound(applicationContext) }
@@ -85,14 +92,13 @@ class RadarForegroundService : Service() {
     private var lastDebugCaptureMs = 0L
     private val seenRallies = mutableSetOf<String>()
     private val alertedRallies = mutableSetOf<String>()
-    private val persistedRallies = mutableSetOf<String>()
+    private val observationState = mutableMapOf<String, String>()
+    private val lastCandidateById = mutableMapOf<String, radar.vision.RallyCandidate>()
     private val lastDecisionState = mutableMapOf<String, String>()
     private val eligibleRallies = mutableSetOf<String>()
     private val nonTargetRallies = mutableSetOf<String>()
     private val fullRallies = mutableSetOf<String>()
     private val unknownRallies = mutableSetOf<String>()
-    private val shadowSelectedRallies = mutableSetOf<String>()
-    private val policyProcessedRallies = mutableSetOf<String>()
     private val policySkippedRallies = mutableSetOf<String>()
     private val selectedDelayByRally = mutableMapOf<String, Int>()
     private val skipDecisionByRally = mutableMapOf<String, Boolean>()
@@ -107,6 +113,8 @@ class RadarForegroundService : Service() {
     private var captureWidth = 0
     private var captureHeight = 0
     private var lastAbortReason: String? = null
+    @Volatile private var automationPaused = false
+    @Volatile private var lastAnalyzedFrameId: Long? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -114,20 +122,8 @@ class RadarForegroundService : Service() {
         captureThread = HandlerThread("radar-capture").also { it.start() }
         serviceScope.launch {
             settingsStore.settings.distinctUntilChanged().collect { updated ->
-                settings.set(updated)
-                val policyConfig = AutoPolicyConfig(
-                    delayMinSeconds = updated.delayMinSeconds,
-                    delayMaxSeconds = updated.delayMaxSeconds,
-                    skipMin = updated.skipMin,
-                    skipMax = updated.skipMax,
-                )
-                if (policyConfig != appliedAutoConfig) {
-                    autoPolicy.updateConfig(policyConfig)
-                    appliedAutoConfig = policyConfig
-                }
+                applySettings(updated)
                 debugStore.purgeExpired(updated.retentionDays)
-                overlay.setEnabled(updated.overlayEnabled)
-                RadarRuntime.update { it.copy(mode = updated.mode) }
             }
         }
     }
@@ -137,7 +133,29 @@ class RadarForegroundService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_PAUSE) {
+            setAutomationPaused(true)
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_RESUME) {
+            setAutomationPaused(false)
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_CAPTURE_LAB) {
+            val label = intent.getStringExtra(EXTRA_CAPTURE_LABEL)
+                ?.let { runCatching { CaptureLabLabel.valueOf(it) }.getOrNull() }
+                ?: CaptureLabLabel.UNKNOWN
+            val archive = captureLabStore.save(label)
+            RadarRuntime.update {
+                it.copy(message = archive?.let { file -> "Capture Lab сохранён локально: ${file.name}" }
+                    ?: "Capture Lab: буфер пока пуст")
+            }
+            return START_NOT_STICKY
+        }
         if (intent?.action != ACTION_START || capture != null) return START_NOT_STICKY
+        val initialSettings = runBlocking(Dispatchers.IO) { settingsStore.settings.first() }
+        applySettings(initialSettings)
+        resetSessionState(initialSettings)
         startForegroundCompat(notification("Запуск захвата…"))
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
         val resultData = if (Build.VERSION.SDK_INT >= 33) {
@@ -150,6 +168,98 @@ class RadarForegroundService : Service() {
         }
         startProjection(resultCode, resultData)
         return START_NOT_STICKY
+    }
+
+    private fun applySettings(updated: RadarSettings) {
+        settings.set(updated)
+        val policyConfig = AutoPolicyConfig(
+            delayMinSeconds = updated.delayMinSeconds,
+            delayMaxSeconds = updated.delayMaxSeconds,
+            skipMin = updated.skipMin,
+            skipMax = updated.skipMax,
+        )
+        if (policyConfig != appliedAutoConfig) {
+            shadowCoordinator.updateConfig(policyConfig)
+            appliedAutoConfig = policyConfig
+        }
+        overlay.setEnabled(updated.overlayEnabled)
+        RadarRuntime.update { it.copy(mode = updated.mode) }
+    }
+
+    private fun resetSessionState(currentSettings: RadarSettings) {
+        pending.getAndSet(null)?.close()
+        tracker.reset()
+        shadowCoordinator.reset()
+        frameIds.set(0)
+        lastOfferedForAnalysisNs.set(0)
+        lastAnalyzedFrameId = null
+        automationPaused = false
+        seenRallies.clear()
+        alertedRallies.clear()
+        observationState.clear()
+        lastCandidateById.clear()
+        lastDecisionState.clear()
+        eligibleRallies.clear()
+        nonTargetRallies.clear()
+        fullRallies.clear()
+        unknownRallies.clear()
+        policySkippedRallies.clear()
+        selectedDelayByRally.clear()
+        skipDecisionByRally.clear()
+        debuggedTargets.clear()
+        recentLatencies.clear()
+        latencyTotalMs = 0
+        latencySamples = 0
+        safetyRejectCount = 0
+        visionRejectCount = 0
+        safetyAbortCount = 0
+        lastAbortReason = null
+        RadarRuntime.resetForSession(currentSettings.mode)
+    }
+
+    private fun toggleAutomationPause() = setAutomationPaused(!automationPaused)
+
+    private fun setAutomationPaused(value: Boolean) {
+        automationPaused = value
+        if (value) shadowCoordinator.pause() else shadowCoordinator.resume(lastAnalyzedFrameId)
+        RadarRuntime.update {
+            it.copy(
+                lifecycle = if (value) RuntimeLifecycle.AUTOMATION_PAUSED else RuntimeLifecycle.RUNNING,
+                shadowPhase = if (value) ShadowAutoPhase.PAUSED.name else ShadowAutoPhase.IDLE.name,
+                shadowDelayRemainingSeconds = null,
+                message = if (value) {
+                    "Автоматизация на паузе; Radar и уведомления продолжают работать"
+                } else {
+                    "Автоматизация возобновлена; ожидается новый кадр"
+                },
+            )
+        }
+        val current = RadarRuntime.status.value
+        overlay.update(
+            current.mode,
+            null,
+            OverlayCounters(current.successes, current.failures, current.policySkipped),
+            OverlayAutomationState(value, current.shadowPhase, null),
+        )
+        getSystemService(NotificationManager::class.java).notify(
+            NOTIFICATION_ID,
+            notification(if (value) "Автоматизация приостановлена · Radar активен" else "Автоматизация возобновлена"),
+        )
+    }
+
+    private fun recordShadowUpdate(update: ShadowAutoUpdate) {
+        val id = update.rallyId?.value ?: return
+        when (update.phase) {
+            ShadowAutoPhase.SKIPPED -> {
+                policySkippedRallies += id
+                skipDecisionByRally[id] = true
+            }
+            ShadowAutoPhase.WAITING_DELAY -> {
+                skipDecisionByRally[id] = false
+                update.delaySeconds?.let { selectedDelayByRally[id] = it }
+            }
+            else -> Unit
+        }
     }
 
     private fun startProjection(resultCode: Int, data: Intent) {
@@ -180,17 +290,17 @@ class RadarForegroundService : Service() {
         if (!calibration.isCompatible(metrics.widthPixels, metrics.heightPixels)) {
             RadarRuntime.update {
                 it.copy(
-                    running = false,
+                    running = true,
+                    lifecycle = RuntimeLifecycle.NEEDS_CALIBRATION,
                     message = "RADAR_PAUSED_NEEDS_CALIBRATION: ${calibration.incompatibilityReason(metrics.widthPixels, metrics.heightPixels)}",
                 )
             }
-            stopSelf()
             return
         }
         captureWidth = metrics.widthPixels
         captureHeight = metrics.heightPixels
         sessionId = runBlocking(Dispatchers.IO) {
-            repository.beginSession(settings.get().calibrationProfile)
+            repository.beginSession(settings.get().calibrationProfile, settings.get().mode)
         }
         capture = ScreenCaptureController(
             mediaProjection,
@@ -202,6 +312,7 @@ class RadarForegroundService : Service() {
         RadarRuntime.update {
             it.copy(
                 running = true,
+                lifecycle = RuntimeLifecycle.RUNNING,
                 mode = settings.get().mode,
                 sessionStartedAtEpochMs = System.currentTimeMillis(),
                 message = "Radar работает локально · ${metrics.widthPixels}×${metrics.heightPixels}",
@@ -268,6 +379,11 @@ class RadarForegroundService : Service() {
                     overlay.boundsNormalized(image.width, image.height)?.let(argbImage::mask)
                     val observedMs = android.os.SystemClock.elapsedRealtime()
                     val analysis = detector.analyze(argbImage, frameIds.incrementAndGet(), observedMs)
+                    lastAnalyzedFrameId = analysis.frameId
+                    frameBuffer.snapshotDownscaled().also { small ->
+                        captureLabStore.add(small, analysis.frameId, observedMs)
+                        small.recycle()
+                    }
                     if (analysis.screen == ScreenState.UNKNOWN) recordAbortOnce("screen:UNKNOWN") else lastAbortReason = null
                     val tracking = tracker.update(analysis)
                     val activeNow = tracking.active.filter { it.stable && it.presentInCurrentFrame && it.lastSeenFrameId == analysis.frameId }
@@ -279,7 +395,15 @@ class RadarForegroundService : Service() {
                             safetyMarginSeconds = currentSettings.safetyMarginSeconds,
                         ),
                     )
-                    val decisions = safety.decide(currentSettings.mode, analysis, tracking)
+                    val actionDecisions = safety.decide(currentSettings.mode, analysis, tracking)
+                    val alertDecisions = RadarAlertPolicy(
+                        SafetyPolicy(
+                            targetLevels = currentSettings.selectedLevels,
+                            minimumFreeSlots = currentSettings.minimumFreeSlots,
+                            safetyMarginSeconds = currentSettings.safetyMarginSeconds,
+                        ),
+                    ).decide(analysis, tracking)
+                    val decisions = if (currentSettings.mode == RuntimeMode.RADAR) alertDecisions else actionDecisions
                     val decisionById = decisions.mapNotNull { decision -> decision.rallyId?.value?.let { it to decision } }.toMap()
                     activeNow.forEach { track ->
                         val id = track.id.value
@@ -302,37 +426,28 @@ class RadarForegroundService : Service() {
                         val level = tracking.active.firstOrNull { it.id == decision.rallyId }?.candidate?.level
                         emitAlert(level, currentSettings)
                     }
-                    if (currentSettings.mode == RuntimeMode.SHADOW_AUTO || currentSettings.mode == RuntimeMode.AUTO) {
-                        decisions.filter { it.kind == DecisionKind.WOULD_SELECT }.forEach { decision ->
-                            val rallyId = decision.rallyId ?: return@forEach
-                            if (policyProcessedRallies.add(rallyId.value)) {
-                                when (val policyDecision = autoPolicy.onEligible(rallyId)) {
-                                    is AutoPolicyDecision.Skip -> {
-                                        policySkippedRallies += rallyId.value
-                                        skipDecisionByRally[rallyId.value] = true
-                                    }
-                                    is AutoPolicyDecision.Wait -> {
-                                        shadowSelectedRallies += rallyId.value
-                                        skipDecisionByRally[rallyId.value] = false
-                                        selectedDelayByRally[rallyId.value] = policyDecision.delaySeconds
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    val overlayRally = decisions.firstOrNull { it.kind == DecisionKind.WOULD_SELECT }?.rallyId?.let { id ->
+                    val shadowUpdate = if (currentSettings.mode == RuntimeMode.SHADOW_AUTO || currentSettings.mode == RuntimeMode.AUTO) {
+                        shadowCoordinator.onFrame(analysis, tracking, actionDecisions).also(::recordShadowUpdate)
+                    } else ShadowAutoUpdate(ShadowAutoPhase.IDLE)
+                    val overlayRallyId = shadowUpdate.rallyId
+                        ?: decisions.firstOrNull { it.kind == DecisionKind.WOULD_SELECT }?.rallyId
+                    val overlayRally = overlayRallyId?.let { id ->
                         activeNow.firstOrNull { it.id == id }?.candidate
                     }
+                    val delayRemaining = shadowUpdate.dueAtMonotonicMs?.let { due ->
+                        ((due - observedMs).coerceAtLeast(0L) + 999L) / 1_000L
+                    }?.toInt()
                     overlay.update(
                         currentSettings.mode,
                         overlayRally,
                         OverlayCounters(
-                            success = 0,
-                            failed = safetyRejectCount,
-                            skipped = policySkippedRallies.size.toLong(),
+                            success = shadowUpdate.virtualAttempts.toLong(),
+                            failed = RadarRuntime.status.value.failures,
+                            skipped = shadowUpdate.policySkips.toLong(),
                         ),
+                        OverlayAutomationState(automationPaused, shadowUpdate.phase.name, delayRemaining),
                     )
-                    persistMeaningfulEvents(activeNow, decisions)
+                    persistMeaningfulEvents(activeNow, tracking.expired, decisions, analysis.observedAtMonotonicMs)
                     val nowEpochMs = System.currentTimeMillis()
                     val diagnosticFailure = analysis.screen == radar.vision.ScreenState.UNKNOWN ||
                         analysis.rallies.any { it.bossType == BossType.UNKNOWN || it.level == null || it.full == true && it.joinPlusBounds.isNotEmpty() }
@@ -369,8 +484,11 @@ class RadarForegroundService : Service() {
                             full = fullRallies.size.toLong(),
                             unknown = unknownRallies.size.toLong(),
                             alertsEmitted = alertedRallies.size.toLong(),
-                            shadowSelections = shadowSelectedRallies.size.toLong(),
-                            policySkipped = policySkippedRallies.size.toLong(),
+                            shadowSelections = shadowUpdate.virtualAttempts.toLong(),
+                            policySkipped = shadowUpdate.policySkips.toLong(),
+                            shadowPhase = shadowUpdate.phase.name,
+                            shadowDelayRemainingSeconds = delayRemaining,
+                            attempts = shadowUpdate.virtualAttempts.toLong(),
                             safetyRejects = safetyRejectCount,
                             visionRejects = visionRejectCount,
                             safetyAborts = safetyAbortCount,
@@ -379,8 +497,9 @@ class RadarForegroundService : Service() {
                             p95LatencyMs = sortedLatencies.percentile(0.95),
                             mode = currentSettings.mode,
                             message = when {
+                                automationPaused -> "Автоматизация на паузе; Radar и уведомления продолжают работать"
                                 currentSettings.mode == RuntimeMode.SHADOW_AUTO ->
-                                    "Shadow: ${decisions.count { it.kind == DecisionKind.WOULD_SELECT }} решений (тапов нет)"
+                                    "Shadow ${shadowUpdate.phase}: ${shadowUpdate.reason ?: "наблюдение"}"
                                 currentSettings.mode == RuntimeMode.ONE_TAP || currentSettings.mode == RuntimeMode.AUTO ->
                                     "${currentSettings.mode}: действия заблокированы до device validation"
                                 newlyAlerted.isNotEmpty() -> "Новая подходящая карточка"
@@ -403,19 +522,62 @@ class RadarForegroundService : Service() {
 
     private fun persistMeaningfulEvents(
         activeNow: List<radar.vision.TrackedRally>,
+        expired: List<radar.vision.RallyId>,
         decisions: List<radar.vision.DetectorDecision>,
+        observedAtMonotonicMs: Long,
     ) {
         val activeSession = sessionId ?: return
         val decisionsById = decisions.mapNotNull { it.rallyId?.value?.let { id -> id to it } }.toMap()
-        activeNow.filter { persistedRallies.add(it.id.value) }.forEach { track ->
-            serviceScope.launch {
+        activeNow.forEach { track ->
+            val id = track.id.value
+            val candidate = track.candidate
+            val actionable = decisionsById[id]?.kind == DecisionKind.WOULD_SELECT
+            val countdownBucket = candidate.remainingSeconds?.div(5)
+            val fingerprint = listOf(
+                candidate.bossType,
+                candidate.level,
+                candidate.participantCount,
+                candidate.capacity,
+                candidate.joinedState,
+                candidate.joinable,
+                countdownBucket,
+                actionable,
+                selectedDelayByRally[id],
+                skipDecisionByRally[id],
+            ).joinToString("|")
+            val previous = observationState.put(id, fingerprint)
+            lastCandidateById[id] = candidate
+            if (previous != fingerprint) {
+                serviceScope.launch {
+                    repository.recordObservation(
+                        activeSession,
+                        id,
+                        candidate,
+                        observedAtMonotonicMs,
+                        actionable,
+                        selectedDelayByRally[id],
+                        skipDecisionByRally[id],
+                        eventType = if (previous == null) "FIRST_SEEN" else "STATE_CHANGED",
+                    )
+                }
+            }
+        }
+        expired.forEach { rallyId ->
+            val id = rallyId.value
+            val candidate = lastCandidateById.remove(id)
+            observationState.remove(id)
+            selectedDelayByRally.remove(id)
+            skipDecisionByRally.remove(id)
+            if (candidate != null) serviceScope.launch {
                 repository.recordObservation(
                     activeSession,
-                    track.id.value,
-                    track.candidate,
-                    decisionsById[track.id.value]?.kind == DecisionKind.WOULD_SELECT,
-                    selectedDelayByRally[track.id.value],
-                    skipDecisionByRally[track.id.value],
+                    id,
+                    candidate,
+                    observedAtMonotonicMs,
+                    actionable = false,
+                    selectedDelaySeconds = null,
+                    skipDecision = null,
+                    eventType = "DISAPPEARED",
                 )
             }
         }
@@ -476,9 +638,19 @@ class RadarForegroundService : Service() {
         pending.getAndSet(null)?.close()
         capture?.close()
         capture = null
+        shadowCoordinator.pause()
+        automationPaused = true
         recordAbortOnce("geometry:$reason")
         val message = "RADAR_PAUSED_NEEDS_CALIBRATION: $reason"
-        RadarRuntime.update { it.copy(message = message) }
+        RadarRuntime.update {
+            it.copy(
+                running = true,
+                lifecycle = RuntimeLifecycle.NEEDS_CALIBRATION,
+                shadowPhase = ShadowAutoPhase.PAUSED.name,
+                shadowDelayRemainingSeconds = null,
+                message = message,
+            )
+        }
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(message))
     }
 
@@ -491,10 +663,13 @@ class RadarForegroundService : Service() {
         frameBuffer.close()
         overlay.close()
         serviceScope.cancel()
-        runBlocking(Dispatchers.IO) { sessionId?.let { repository.endSession(it) } }
+        val summary = RadarRuntime.status.value
+        runBlocking(Dispatchers.IO) { sessionId?.let { repository.endSession(it, summary) } }
         repository.close()
         alertSound.close()
-        RadarRuntime.update { it.copy(running = false, message = "Остановлен") }
+        RadarRuntime.update {
+            it.copy(running = false, lifecycle = RuntimeLifecycle.STOPPED, message = "Остановлен")
+        }
         super.onDestroy()
     }
 
@@ -513,12 +688,21 @@ class RadarForegroundService : Service() {
         val stop = PendingIntent.getService(
             this, 2, stopIntent(this), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        val automationAction = PendingIntent.getService(
+            this,
+            3,
+            Intent(this, RadarForegroundService::class.java).setAction(
+                if (automationPaused) ACTION_RESUME else ACTION_PAUSE,
+            ),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .setContentTitle("Rally Helper")
             .setContentText(text)
             .setOngoing(true)
             .setContentIntent(open)
+            .addAction(0, if (automationPaused) "Возобновить" else "Пауза авто", automationAction)
             .addAction(0, "Остановить", stop)
             .build()
     }
@@ -541,8 +725,12 @@ class RadarForegroundService : Service() {
     companion object {
         private const val ACTION_START = "com.rallyhelper.START_RADAR"
         private const val ACTION_STOP = "com.rallyhelper.STOP_RADAR"
+        private const val ACTION_PAUSE = "com.rallyhelper.PAUSE_AUTOMATION"
+        private const val ACTION_RESUME = "com.rallyhelper.RESUME_AUTOMATION"
+        private const val ACTION_CAPTURE_LAB = "com.rallyhelper.SAVE_CAPTURE_LAB"
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_RESULT_DATA = "result_data"
+        private const val EXTRA_CAPTURE_LABEL = "capture_label"
         private const val CHANNEL_ID = "radar"
         private const val NOTIFICATION_ID = 42
 
@@ -551,6 +739,10 @@ class RadarForegroundService : Service() {
                 .putExtra(EXTRA_RESULT_CODE, resultCode).putExtra(EXTRA_RESULT_DATA, data)
 
         fun stopIntent(context: Context) = Intent(context, RadarForegroundService::class.java).setAction(ACTION_STOP)
+
+        fun captureLabIntent(context: Context, label: CaptureLabLabel) =
+            Intent(context, RadarForegroundService::class.java).setAction(ACTION_CAPTURE_LAB)
+                .putExtra(EXTRA_CAPTURE_LABEL, label.name)
     }
 }
 

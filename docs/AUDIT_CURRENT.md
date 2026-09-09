@@ -11,11 +11,17 @@ Audited scope: the tree currently checked out from `main` plus the product-mode 
 - plus-required joinability and configurable free-slot threshold;
 - independent sound and vibration settings with a local SoundPool cue;
 - optional draggable overlay whose bounds are excluded from CV;
-- functional delay/skip policy with per-rally delay sampling;
+- functional single-flight Shadow coordinator with deterministic priority, monotonic delay and fresh-frame revalidation;
+- independent Radar alert policy and strict action safety policy;
+- automation PAUSE/RESUME separate from service STOP;
+- explicit `NEEDS_CALIBRATION` lifecycle state and per-session runtime reset;
+- Material 3 range controls shown only for AUTO/SHADOW;
+- local current/history session UI and Room v3 meaningful-transition records;
+- private five-second Capture Lab ring buffer with labelled ZIP/JSON export;
 - debug-capture-only retention with defaults `FAILURES` and three days;
 - compact runtime templates, no raw calibration images in the APK, and reusable capture buffers;
-- Room sessions, observations, decisions, aborts and policy metadata;
-- foreground notification STOP and overlay PAUSE.
+- Room sessions, observations, decisions, aborts, transition and policy metadata;
+- foreground notification STOP plus automation PAUSE/RESUME.
 
 ## Intentionally gated
 
@@ -32,4 +38,4 @@ Audited scope: the tree currently checked out from `main` plus the product-mode 
 - labelled squad-state samples;
 - labelled travel-time samples;
 - functional RADAR scenario coverage, 100 shadow decisions and final-release endurance;
-- a fresh physical smoke after the last pure policy-only change.
+- a fresh physical functional matrix after the Phase C runtime changes.

@@ -26,14 +26,18 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -44,6 +48,10 @@ import com.rallyhelper.capture.RadarForegroundService
 import com.rallyhelper.data.DebugCaptureMode
 import com.rallyhelper.data.RadarSettings
 import com.rallyhelper.data.RadarSettingsStore
+import com.rallyhelper.data.RadarRepository
+import com.rallyhelper.data.RadarSession
+import com.rallyhelper.data.RallyObservation
+import com.rallyhelper.debug.CaptureLabLabel
 import com.rallyhelper.debug.DebugCaptureStore
 import kotlinx.coroutines.launch
 import radar.vision.RuntimeMode
@@ -61,6 +69,16 @@ class MainActivity : ComponentActivity() {
         val settingsStore = remember { RadarSettingsStore(this@MainActivity) }
         val settings by settingsStore.settings.collectAsStateWithLifecycle(initialValue = RadarSettings())
         val scope = rememberCoroutineScope()
+        var showHistory by remember { mutableStateOf(false) }
+        val historyRepository = remember { RadarRepository.create(this@MainActivity) }
+        DisposableEffect(historyRepository) { onDispose { historyRepository.close() } }
+        val sessions by historyRepository.observeRecentSessions().collectAsStateWithLifecycle(initialValue = emptyList())
+        var selectedSessionId by remember { mutableStateOf<Long?>(null) }
+        val selectedEventsFlow = remember(selectedSessionId) {
+            historyRepository.observeSessionEvents(selectedSessionId ?: -1L)
+        }
+        val selectedEvents by selectedEventsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+        var captureLabel by remember { mutableStateOf(CaptureLabLabel.UNKNOWN) }
         val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
         val overlayPermission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {}
         val projectionConsent = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -80,6 +98,12 @@ class MainActivity : ComponentActivity() {
                 Text("Rally Helper", style = MaterialTheme.typography.headlineMedium)
                 Text("Локальный анализ экрана", color = Color(0xFF15803D))
 
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ModeButton("Текущая сессия", !showHistory) { showHistory = false }
+                    ModeButton("История", showHistory) { showHistory = true }
+                }
+
+                if (!showHistory) {
                 SettingsCard("Режим") {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         ModeButton("RADAR", settings.mode == RuntimeMode.RADAR) {
@@ -92,6 +116,7 @@ class MainActivity : ComponentActivity() {
                             scope.launch { settingsStore.setMode(RuntimeMode.AUTO) }
                         }
                     }
+                    Text(settings.mode.description())
                     if (settings.mode == RuntimeMode.ONE_TAP || settings.mode == RuntimeMode.AUTO) {
                         Text(
                             "Игровые действия заблокированы до завершения device validation.",
@@ -113,22 +138,22 @@ class MainActivity : ComponentActivity() {
                     ValueSlider("Минимум свободных мест", settings.minimumFreeSlots, 1..5) { value ->
                         scope.launch { settingsStore.setMinimumFreeSlots(value) }
                     }
-                    HorizontalDivider()
-                    Text("Задержка перед присоединением")
-                    ValueSlider("MIN, сек", settings.delayMinSeconds, 0..120) { value ->
-                        scope.launch { settingsStore.setDelayRange(value, maxOf(value, settings.delayMaxSeconds)) }
-                    }
-                    ValueSlider("MAX, сек", settings.delayMaxSeconds, 0..120) { value ->
-                        scope.launch { settingsStore.setDelayRange(minOf(value, settings.delayMinSeconds), value) }
-                    }
-                    Text("Для каждого rally задержка выбирается один раз; после неё обязательна свежая проверка.")
-                    HorizontalDivider()
-                    Text("Пропускать подходящих штурмов между попытками")
-                    ValueSlider("MIN", settings.skipMin, 0..20) { value ->
-                        scope.launch { settingsStore.setSkipRange(value, maxOf(value, settings.skipMax)) }
-                    }
-                    ValueSlider("MAX", settings.skipMax, 0..20) { value ->
-                        scope.launch { settingsStore.setSkipRange(minOf(value, settings.skipMin), value) }
+                    if (settings.mode == RuntimeMode.AUTO || settings.mode == RuntimeMode.SHADOW_AUTO) {
+                        HorizontalDivider()
+                        RangeValueSlider(
+                            "Задержка перед присоединением, сек",
+                            settings.delayMinSeconds,
+                            settings.delayMaxSeconds,
+                            0..120,
+                        ) { min, max -> scope.launch { settingsStore.setDelayRange(min, max) } }
+                        Text("Задержка выбирается один раз; после неё обязательна свежая проверка.")
+                        HorizontalDivider()
+                        RangeValueSlider(
+                            "Пропускать подходящих между попытками",
+                            settings.skipMin,
+                            settings.skipMax,
+                            0..20,
+                        ) { min, max -> scope.launch { settingsStore.setSkipRange(min, max) } }
                     }
                     ValueSlider("Запас времени, сек", settings.safetyMarginSeconds, 0..30) { value ->
                         scope.launch { settingsStore.setSafetyMarginSeconds(value) }
@@ -187,6 +212,20 @@ class MainActivity : ComponentActivity() {
                         scope.launch { settingsStore.setMode(RuntimeMode.SHADOW_AUTO) }
                     }
                     Text("Shadow Auto принимает policy-решения, но никогда не выполняет жесты.")
+                    Text("Capture Lab: ${captureLabel.name}")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = {
+                            val labels = CaptureLabLabel.values()
+                            captureLabel = labels[(captureLabel.ordinal + 1) % labels.size]
+                        }) { Text("Сменить метку") }
+                        Button(
+                            enabled = status.running,
+                            onClick = {
+                                startService(RadarForegroundService.captureLabIntent(this@MainActivity, captureLabel))
+                            },
+                        ) { Text("Сохранить 5 секунд") }
+                    }
+                    Text("ZIP + JSON сохраняются только в закрытом хранилище приложения; отправки в сеть нет.")
                 }
 
                 RuntimeCard(status)
@@ -201,6 +240,9 @@ class MainActivity : ComponentActivity() {
                     Text("Остановить")
                 }
                 Text("При смене ориентации, viewport или неизвестном экране анализ прекращается безопасно.")
+                } else {
+                    HistoryView(sessions, selectedSessionId, selectedEvents) { selectedSessionId = it }
+                }
             }
         }
     }
@@ -256,6 +298,59 @@ private fun ValueSlider(label: String, value: Int, range: IntRange, onValueChang
 }
 
 @Composable
+private fun RangeValueSlider(
+    label: String,
+    min: Int,
+    max: Int,
+    range: IntRange,
+    onValueChange: (Int, Int) -> Unit,
+) {
+    Column {
+        Text("$label: $min–$max")
+        RangeSlider(
+            value = min.toFloat()..max.toFloat(),
+            onValueChange = {
+                onValueChange(
+                    it.start.roundToInt().coerceIn(range),
+                    it.endInclusive.roundToInt().coerceIn(range),
+                )
+            },
+            valueRange = range.first.toFloat()..range.last.toFloat(),
+            steps = (range.last - range.first - 1).coerceAtLeast(0),
+        )
+    }
+}
+
+@Composable
+private fun HistoryView(
+    sessions: List<RadarSession>,
+    selectedSessionId: Long?,
+    events: List<RallyObservation>,
+    onSelect: (Long) -> Unit,
+) {
+    SettingsCard("История сессий") {
+        if (sessions.isEmpty()) Text("Завершённых сессий пока нет.")
+        sessions.forEach { session ->
+            OutlinedButton(onClick = { onSelect(session.id) }, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    "${session.mode} · ${session.framesAnalyzed} кадров · " +
+                        "eligible ${session.eligible} · attempts ${session.attempts}",
+                )
+            }
+        }
+    }
+    if (selectedSessionId != null) SettingsCard("Переходы сессии #$selectedSessionId") {
+        if (events.isEmpty()) Text("Значимых переходов не записано.")
+        events.take(100).forEach { event ->
+            Text(
+                "${event.eventType} · ${event.rallyId} · L${event.level ?: "?"} · " +
+                    "${event.participantCount ?: "?"}/${event.capacity ?: "?"} · ${event.joinedState}",
+            )
+        }
+    }
+}
+
+@Composable
 private fun LevelToggle(level: Int, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Checkbox(checked = checked, onCheckedChange = onCheckedChange)
@@ -276,4 +371,11 @@ private fun RuntimeMode.displayName(): String = when (this) {
     RuntimeMode.ONE_TAP -> "ONE_TAP"
     RuntimeMode.AUTO -> "AUTO"
     RuntimeMode.SHADOW_AUTO -> "SHADOW AUTO"
+}
+
+private fun RuntimeMode.description(): String = when (this) {
+    RuntimeMode.RADAR -> "Только локальное распознавание и уведомления; никаких действий."
+    RuntimeMode.ONE_TAP -> "Ручной запуск одной проверки; действия пока заблокированы validation gate."
+    RuntimeMode.AUTO -> "Автоматический policy-цикл; действия пока заблокированы validation gate."
+    RuntimeMode.SHADOW_AUTO -> "Полная симуляция выбора, задержки и revalidation без жестов."
 }

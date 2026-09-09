@@ -99,6 +99,22 @@ internal class ScreenCaptureController(
                 Bitmap.Config.ARGB_8888,
             )
 
+            /** Small private diagnostic frame; avoids allocating a full-resolution source bitmap. */
+            fun snapshotDownscaled(maxWidth: Int = 320): Bitmap {
+                require(visibleWidth > 0 && visibleHeight > 0)
+                val targetWidth = minOf(maxWidth, visibleWidth)
+                val targetHeight = maxOf(1, visibleHeight * targetWidth / visibleWidth)
+                val sampled = IntArray(targetWidth * targetHeight)
+                for (y in 0 until targetHeight) {
+                    val sourceY = y * visibleHeight / targetHeight
+                    for (x in 0 until targetWidth) {
+                        val sourceX = x * visibleWidth / targetWidth
+                        sampled[y * targetWidth + x] = pixels[sourceY * visibleWidth + sourceX]
+                    }
+                }
+                return Bitmap.createBitmap(sampled, targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+            }
+
             fun close() {
                 bitmap?.recycle()
                 bitmap = null

@@ -11,9 +11,13 @@
 | Free-slot and travel-margin guards | pass |
 | Delay sampled once per rally | pass |
 | Skip counter consumes eligible rallies only | pass |
+| Deterministic single-target priority | pass |
+| Monotonic delay + fresh-frame revalidation | pass |
+| Pause cancels pending target and resumes fresh | pass |
+| Relaxed alert cannot authorize action | pass |
 | Raw screenshots in debug APK | 0 |
 | Android compile / lint | pass |
-| Room schema export | v2 |
+| Room schema export | v3 |
 
 Synthetic mutations cover brightness, contrast, slight scale, translation, JPEG compression, mild blur, inset shift, and harmless occlusion. They are robustness tests, not a real holdout.
 

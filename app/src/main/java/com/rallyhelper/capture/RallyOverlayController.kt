@@ -20,6 +20,12 @@ import radar.vision.RuntimeMode
 
 internal data class OverlayCounters(val success: Long, val failed: Long, val skipped: Long)
 
+internal data class OverlayAutomationState(
+    val paused: Boolean = false,
+    val phase: String = "IDLE",
+    val delayRemainingSeconds: Int? = null,
+)
+
 internal class RallyOverlayController(
     private val context: Context,
     private val onJoinRequested: () -> Unit,
@@ -40,7 +46,12 @@ internal class RallyOverlayController(
         mainHandler.post { if (value && Settings.canDrawOverlays(context)) ensureView() else removeView() }
     }
 
-    fun update(mode: RuntimeMode, rally: RallyCandidate?, values: OverlayCounters) {
+    fun update(
+        mode: RuntimeMode,
+        rally: RallyCandidate?,
+        values: OverlayCounters,
+        automation: OverlayAutomationState = OverlayAutomationState(),
+    ) {
         mainHandler.post {
             if (!enabled || !Settings.canDrawOverlays(context)) return@post
             ensureView()
@@ -49,16 +60,25 @@ internal class RallyOverlayController(
                 else -> "${mode.displayName()} · ${rally.level ?: "?"} ур · " +
                     "${rally.participantCount ?: "?"}/${rally.capacity ?: "?"}"
             }
-            timer?.text = rally?.remainingSeconds?.let(::clock) ?: "—"
+            timer?.text = when {
+                automation.paused -> "PAUSED"
+                automation.delayRemainingSeconds != null -> "WAIT ${clock(automation.delayRemainingSeconds)}"
+                rally != null -> rally.remainingSeconds?.let(::clock) ?: automation.phase
+                else -> automation.phase
+            }
             counters?.text = "✓ ${values.success}   ✕ ${values.failed}   ↷ ${values.skipped}"
             action?.apply {
                 visibility = when (mode) {
-                    RuntimeMode.ONE_TAP, RuntimeMode.AUTO -> View.VISIBLE
-                    RuntimeMode.RADAR, RuntimeMode.SHADOW_AUTO -> View.GONE
+                    RuntimeMode.ONE_TAP, RuntimeMode.AUTO, RuntimeMode.SHADOW_AUTO -> View.VISIBLE
+                    RuntimeMode.RADAR -> View.GONE
                 }
-                text = if (mode == RuntimeMode.AUTO) "PAUSE" else "ВСТУПИТЬ"
+                text = when {
+                    mode == RuntimeMode.ONE_TAP -> "ВСТУПИТЬ"
+                    automation.paused -> "RESUME"
+                    else -> "PAUSE"
+                }
                 setOnClickListener {
-                    if (mode == RuntimeMode.AUTO) onPauseRequested() else onJoinRequested()
+                    if (mode == RuntimeMode.ONE_TAP) onJoinRequested() else onPauseRequested()
                 }
             }
         }

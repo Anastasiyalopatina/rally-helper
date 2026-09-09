@@ -18,7 +18,7 @@ data class RadarSettings(
     val selectedLevels: Set<Int> = setOf(5, 10),
     val soundEnabled: Boolean = true,
     val vibrationEnabled: Boolean = true,
-    val overlayEnabled: Boolean = true,
+    val overlayEnabled: Boolean = false,
     val mode: RuntimeMode = RuntimeMode.RADAR,
     val debugMode: DebugCaptureMode = DebugCaptureMode.FAILURES,
     val retentionDays: Int = 3,
@@ -38,7 +38,7 @@ class RadarSettingsStore(private val context: Context) {
                 ?: setOf(5, 10),
             soundEnabled = values[Keys.SOUND] ?: true,
             vibrationEnabled = values[Keys.VIBRATION] ?: true,
-            overlayEnabled = values[Keys.OVERLAY] ?: true,
+            overlayEnabled = values[Keys.OVERLAY] ?: false,
             mode = values[Keys.MODE]?.let { runCatching { RuntimeMode.valueOf(it) }.getOrNull() }
                 ?: RuntimeMode.RADAR,
             debugMode = values[Keys.DEBUG]?.let { runCatching { DebugCaptureMode.valueOf(it) }.getOrNull() }
