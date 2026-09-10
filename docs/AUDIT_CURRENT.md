@@ -1,5 +1,7 @@
 # Current code audit
 
+> Historical pre-D0 audit. See `docs/CURRENT_STATE.md` for the implemented experimental ONE_TAP_A runtime.
+
 Audited scope: the tree currently checked out from `main` plus the product-mode preparation changes in this branch.
 
 ## Implemented

@@ -237,9 +237,9 @@ fun main() {
     val gesture = GestureRequest(
         requestId = "g1",
         purpose = GesturePurpose.REFRESH,
-        point = NormalizedPoint(.5, .95),
+        normalizedPoint = NormalizedPoint(.5, .95),
         sourceFrameId = 1,
-        sourceObservedAtMonotonicMs = 1_000,
+        createdAtMonotonicMs = 1_000,
         expiresAtMonotonicMs = 1_750,
         expectedPackage = expectedPackage,
         expectedScreen = ScreenState.EVENT_LIST,
@@ -258,12 +258,22 @@ fun main() {
     )
     check(gate().allowed)
     check(gate(connected = false).reason == GestureRejectReason.SERVICE_DISCONNECTED)
-    check(gate(request = gesture.copy(purpose = GesturePurpose.UNSUPPORTED)).reason == GestureRejectReason.WRONG_PURPOSE)
+    check(gate(request = gesture.copy(purpose = GesturePurpose.SEND)).reason == GestureRejectReason.WRONG_PURPOSE)
     check(gate(now = 1_751).reason == GestureRejectReason.EXPIRED)
     check(gate(verifiedPackage = "").reason == GestureRejectReason.UNVERIFIED_EXPECTED_PACKAGE)
     check(gate(foregroundPackage = "wrong.package").reason == GestureRejectReason.WRONG_FOREGROUND_PACKAGE)
     check(
-        gate(request = gesture.copy(expiresAtMonotonicMs = 40_000), foregroundAt = 0, now = 30_001)
+        GestureSafetyGate.evaluate(
+            gesture.copy(createdAtMonotonicMs = 30_000, expiresAtMonotonicMs = 30_750),
+            expectedPackage,
+            expectedPackage,
+            0,
+            30_001,
+            true,
+            false,
+            false,
+            maxForegroundAgeMs = 30_000,
+        )
             .reason == GestureRejectReason.STALE_FOREGROUND_EVENT,
     )
     check(gate(request = gesture.copy(expectedScreen = ScreenState.UNKNOWN)).reason == GestureRejectReason.WRONG_SOURCE_SCREEN)

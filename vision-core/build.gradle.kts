@@ -17,6 +17,7 @@ sourceSets {
 
 dependencies {
     add("cliImplementation", "org.json:json:20240303")
+    testImplementation(kotlin("test-junit"))
 }
 
 fun registerDatasetVerification(name: String, mode: String, descriptionText: String) = tasks.register<JavaExec>(name) {

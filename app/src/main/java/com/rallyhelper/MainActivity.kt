@@ -146,18 +146,42 @@ class MainActivity : ComponentActivity() {
                             scope.launch { settingsStore.setMode(RuntimeMode.RADAR) }
                         }
                         ModeButton("ONE_TAP", settings.mode == RuntimeMode.ONE_TAP) {
-                            scope.launch { settingsStore.setMode(RuntimeMode.ONE_TAP) }
+                            scope.launch {
+                                settingsStore.setMode(RuntimeMode.ONE_TAP)
+                                settingsStore.setOverlayEnabled(true)
+                            }
+                            if (!android.provider.Settings.canDrawOverlays(this@MainActivity)) {
+                                RadarRuntime.update {
+                                    it.copy(message = "Для кнопки ВСТУПИТЬ разрешите отображение поверх игры")
+                                }
+                                overlayPermission.launch(
+                                    Intent(
+                                        android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        Uri.parse("package:$packageName"),
+                                    ),
+                                )
+                            }
                         }
                         ModeButton("AUTO", settings.mode == RuntimeMode.AUTO) {
                             scope.launch { settingsStore.setMode(RuntimeMode.AUTO) }
                         }
                     }
                     Text(settings.mode.description())
-                    if (settings.mode == RuntimeMode.ONE_TAP || settings.mode == RuntimeMode.AUTO) {
+                    if (settings.mode == RuntimeMode.ONE_TAP) {
                         Text(
-                            "Игровые действия заблокированы до завершения device validation.",
-                            color = Color(0xFFB45309),
+                            "ONE TAP · experimental: одно нажатие открывает экран отряда; отправка остаётся ручной.",
+                            color = Color(0xFF15803D),
                         )
+                        Text(
+                            if (refreshInputConnected) "Rally Helper · Actions включён"
+                            else "Для кнопки ВСТУПИТЬ включите Rally Helper · Actions",
+                            color = if (refreshInputConnected) Color(0xFF15803D) else Color(0xFFB45309),
+                        )
+                        if (!refreshInputConnected) OutlinedButton(onClick = {
+                            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                        }) { Text("Разрешить действия") }
+                    } else if (settings.mode == RuntimeMode.AUTO) {
+                        Text("AUTO пока заблокирован.", color = Color(0xFFB45309))
                     }
                 }
 
@@ -202,7 +226,9 @@ class MainActivity : ComponentActivity() {
                     SettingSwitch("Вибрация", settings.vibrationEnabled) {
                         scope.launch { settingsStore.setVibrationEnabled(it) }
                     }
-                    SettingSwitch("Показывать overlay", settings.overlayEnabled) {
+                    if (settings.mode == RuntimeMode.ONE_TAP) {
+                        Text("Overlay с кнопкой ВСТУПИТЬ включается автоматически.")
+                    } else SettingSwitch("Показывать overlay", settings.overlayEnabled) {
                         scope.launch { settingsStore.setOverlayEnabled(it) }
                     }
                     if (settings.overlayEnabled && !android.provider.Settings.canDrawOverlays(this@MainActivity)) {
@@ -239,7 +265,7 @@ class MainActivity : ComponentActivity() {
                     if (settings.refreshMode == RefreshMode.AUTO_REFRESH) {
                         Text(
                             if (refreshInputConnected) "Спецвозможность подключена"
-                            else "Для AUTO нужна спецвозможность Rally Helper · Refresh",
+                            else "Для AUTO нужна спецвозможность Rally Helper · Actions",
                             color = if (refreshInputConnected) Color(0xFF15803D) else Color(0xFFB45309),
                         )
                         if (!refreshInputConnected) OutlinedButton(onClick = {
@@ -250,10 +276,25 @@ class MainActivity : ComponentActivity() {
 
                 RuntimeCard(status)
                 if (!status.running) Button(onClick = {
+                    if (settings.mode == RuntimeMode.ONE_TAP &&
+                        !android.provider.Settings.canDrawOverlays(this@MainActivity)
+                    ) {
+                        scope.launch { settingsStore.setOverlayEnabled(true) }
+                        RadarRuntime.update {
+                            it.copy(message = "Для кнопки ВСТУПИТЬ разрешите отображение поверх игры")
+                        }
+                        overlayPermission.launch(
+                            Intent(
+                                android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:$packageName"),
+                            ),
+                        )
+                    } else {
                     if (Build.VERSION.SDK_INT >= 33 &&
                         checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
                     ) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                     projectionConsent.launch(getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent())
+                    }
                 }) { Text("Запустить ${settings.mode.displayName()}") }
                 else OutlinedButton(onClick = { startService(RadarForegroundService.stopIntent(this@MainActivity)) }) {
                     Text("Остановить")
@@ -579,7 +620,7 @@ private fun RuntimeMode.displayName(): String = when (this) {
 
 private fun RuntimeMode.description(): String = when (this) {
     RuntimeMode.RADAR -> "Только локальное распознавание и уведомления; никаких действий."
-    RuntimeMode.ONE_TAP -> "Ручной запуск одной проверки; действия пока заблокированы validation gate."
-    RuntimeMode.AUTO -> "Автоматический policy-цикл; действия пока заблокированы validation gate."
+    RuntimeMode.ONE_TAP -> "Radar и одна большая кнопка: после нажатия цель заново проверяется и открывается экран отряда."
+    RuntimeMode.AUTO -> "Автоматический режим пока заблокирован."
     RuntimeMode.SHADOW_AUTO -> "Полная симуляция выбора, задержки и revalidation без жестов."
 }

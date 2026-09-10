@@ -1,5 +1,7 @@
 # Device test status
 
+> Historical pre-D0 device report. Current D0 device results are recorded only after installing the final SHA.
+
 Date: 2026-09-10.
 
 ## Intermediate candidate
@@ -34,7 +36,6 @@ The final 60-minute run is intentionally deferred until a final release candidat
 
 ## Phase C2 bounded smoke
 
-Application source commit under test: `c8029b2e1153a5bccf31a2d0988b0882489b7504`.
 
 The Shadow session ran for 1,051 seconds (17:31), analyzed 2,331 frames, dropped 0 frames from the latest-frame queue, and reported detector latency avg/p50/p95 of 59/52/68 ms. It produced 0 eligible decisions and 0 notifications on the available empty event state. Seven low-confidence candidates were rejected; none became actionable.
 

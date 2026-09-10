@@ -1,5 +1,7 @@
 # Runtime unknowns
 
+> This is a backlog of broader automation evidence. It does not block experimental ONE_TAP_A; see `docs/CURRENT_STATE.md`.
+
 The following items require a connected physical Android device and must not be inferred from desktop tests:
 
 - captured app-window geometry and resize callbacks beyond the validated full-screen path;

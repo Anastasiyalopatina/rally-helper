@@ -175,9 +175,9 @@ class RefreshCoordinator(
         val request = GestureRequest(
             requestId = "refresh-$appearanceSequence-${attemptsThisAppearance + 1}-${frame.frameId}",
             purpose = GesturePurpose.REFRESH,
-            point = candidate.bounds.center,
+            normalizedPoint = candidate.bounds.center,
             sourceFrameId = frame.frameId,
-            sourceObservedAtMonotonicMs = frame.observedAtMonotonicMs,
+            createdAtMonotonicMs = frame.observedAtMonotonicMs,
             expiresAtMonotonicMs = frame.observedAtMonotonicMs + requestTtlMs,
             expectedPackage = expectedPackage,
             expectedScreen = frame.screen,

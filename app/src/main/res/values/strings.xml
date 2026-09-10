@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Rally Helper</string>
-    <string name="accessibility_service_description">Нажимает только подтверждённую экранным анализом кнопку обновления списка.</string>
+    <string name="accessibility_service_description">Выполняет обновление списка и явно подтверждённое действие ВСТУПИТЬ только после свежей проверки экрана.</string>
 </resources>

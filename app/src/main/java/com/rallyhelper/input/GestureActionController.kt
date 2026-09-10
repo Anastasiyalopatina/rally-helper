@@ -133,8 +133,8 @@ class RefreshAccessibilityService : AccessibilityService() {
         inFlightRequestId = request.requestId
         val path = Path().apply {
             moveTo(
-                (request.point.x * displayWidth).toFloat(),
-                (request.point.y * displayHeight).toFloat(),
+                (request.normalizedPoint.x * displayWidth).toFloat(),
+                (request.normalizedPoint.y * displayHeight).toFloat(),
             )
         }
         val gesture = GestureDescription.Builder()

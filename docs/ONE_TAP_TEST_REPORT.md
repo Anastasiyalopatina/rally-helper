@@ -1,5 +1,7 @@
 # ONE_TAP test status
 
+> Historical pre-D0 evidence below. The canonical current status is `docs/CURRENT_STATE.md`; ONE_TAP_A now has a runtime implementation and 14 unit tests. Device evidence must still be tied to the final installed SHA.
+
 Date: 2026-09-10.
 
 | Gate | Status |

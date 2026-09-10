@@ -15,6 +15,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import radar.vision.NormalizedRect
+import radar.vision.OneTapRequest
 import radar.vision.RallyCandidate
 import radar.vision.RallyId
 import radar.vision.RuntimeMode
@@ -37,9 +38,18 @@ internal data class OverlayAutomationState(
     val delayRemainingSeconds: Int? = null,
 )
 
+internal enum class OverlayJoinPhase { IDLE, READY, CHECKING, OPENING, OPENED, FAILED }
+
+internal data class OverlayJoinState(
+    val phase: OverlayJoinPhase = OverlayJoinPhase.IDLE,
+    val actionsAvailable: Boolean = true,
+    val detail: String? = null,
+)
+
 internal class RallyOverlayController(
     private val context: Context,
-    private val onJoinRequested: (RallyId) -> Unit,
+    private val onJoinRequested: (OneTapRequest) -> Unit,
+    private val onActionsPermissionRequested: () -> Unit,
     private val onPauseRequested: () -> Unit,
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -66,6 +76,7 @@ internal class RallyOverlayController(
         rally: RallyCandidate?,
         values: OverlayCounters,
         automation: OverlayAutomationState = OverlayAutomationState(),
+        join: OverlayJoinState = OverlayJoinState(),
     ) {
         mainHandler.post {
             if (!enabled || !Settings.canDrawOverlays(context)) return@post
@@ -78,6 +89,7 @@ internal class RallyOverlayController(
                     "${rally.participantCount ?: "?"}/${rally.capacity ?: "?"}"
             }
             timer?.text = when {
+                join.detail != null -> join.detail
                 automation.paused -> "PAUSED"
                 automation.delayRemainingSeconds != null -> "WAIT ${clock(automation.delayRemainingSeconds)}"
                 rally != null -> rally.remainingSeconds?.let(::clock) ?: automation.phase
@@ -98,16 +110,33 @@ internal class RallyOverlayController(
                     RuntimeMode.RADAR -> View.GONE
                 }
                 text = when {
+                    mode == RuntimeMode.ONE_TAP && !join.actionsAvailable -> "РАЗРЕШИТЬ ДЕЙСТВИЯ"
+                    mode == RuntimeMode.ONE_TAP && join.phase == OverlayJoinPhase.CHECKING -> "ПРОВЕРКА…"
+                    mode == RuntimeMode.ONE_TAP && join.phase == OverlayJoinPhase.OPENING -> "ОТКРЫВАЮ…"
+                    mode == RuntimeMode.ONE_TAP && join.phase == OverlayJoinPhase.OPENED -> "ОТРЯД ОТКРЫТ"
+                    mode == RuntimeMode.ONE_TAP && join.phase == OverlayJoinPhase.FAILED -> "НЕ УДАЛОСЬ"
                     mode == RuntimeMode.ONE_TAP && rallyId == null -> "НЕТ ЦЕЛИ"
                     mode == RuntimeMode.ONE_TAP -> "ВСТУПИТЬ"
                     automation.paused -> "RESUME"
                     else -> "PAUSE"
                 }
-                isEnabled = mode != RuntimeMode.ONE_TAP || rallyId != null
+                isEnabled = when {
+                    mode != RuntimeMode.ONE_TAP -> true
+                    !join.actionsAvailable -> true
+                    join.phase != OverlayJoinPhase.READY -> false
+                    else -> rallyId != null && frameId != null
+                }
                 setOnClickListener {
                     if (mode == RuntimeMode.ONE_TAP) {
+                        if (!join.actionsAvailable) {
+                            onActionsPermissionRequested()
+                            return@setOnClickListener
+                        }
                         val requestedId = displayedRallyId
-                        if (requestedId != null && displayedFrameId != null) onJoinRequested(requestedId)
+                        val requestedFrame = displayedFrameId
+                        if (requestedId != null && requestedFrame != null) {
+                            onJoinRequested(OneTapRequest(requestedId, requestedFrame))
+                        }
                     } else onPauseRequested()
                 }
             }
