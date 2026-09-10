@@ -11,7 +11,10 @@ class RallyDetector(
     private val runtimeTemplates = templates.runtimeOrNull()
         ?: RuntimeTemplateCompiler.compile(templates.references, profile)
     private val digits = DigitRecognizer.fromTemplates(runtimeTemplates.digitTemplates)
+    private var previousRefreshBounds: NormalizedRect? = null
+    private var refreshStableFrames: Int = 0
 
+    @Synchronized
     fun analyze(image: ArgbImage, frameId: Long = 0, monotonicMs: Long = 0): FrameAnalysis {
         if (!profile.isCompatible(image.width, image.height)) {
             return FrameAnalysis(
@@ -64,6 +67,7 @@ class RallyDetector(
             "worldGreenRatio" to worldGreen,
             "worldUiInkRatio" to worldUiInk,
         )
+        if (screen != ScreenState.EVENT_LIST) resetRefreshStability()
         return when (screen) {
             ScreenState.EVENT_LIST -> FrameAnalysis(
                 frameId = frameId,
@@ -73,7 +77,7 @@ class RallyDetector(
                 rallies = detectCards(image).mapIndexed { index, card ->
                     analyzeCard(image, card, index, monotonicMs, diagnostics)
                 }.filter(::hasStructuralCardEvidence),
-                refreshButton = detectRefreshButton(image),
+                refreshButton = detectRefreshButton(image, diagnostics),
                 diagnostics = diagnostics,
             )
             ScreenState.MARCH_SCREEN -> FrameAnalysis(
@@ -323,23 +327,80 @@ class RallyDetector(
         return result
     }
 
-    private fun detectRefreshButton(image: ArgbImage): Recognition<NormalizedRect> {
-        val candidates = refreshOrangeComponents(image, profile.refreshButtonBand).filter { component ->
+    private fun detectRefreshButton(
+        image: ArgbImage,
+        diagnostics: MutableMap<String, Double>,
+    ): Recognition<RefreshControlCandidate> {
+        val orangeComponents = refreshOrangeComponents(image, profile.refreshButtonBand)
+        diagnostics["refreshOrangeComponents"] = orangeComponents.size.toDouble()
+        orangeComponents.maxByOrNull { it.pixelCount }?.let { largest ->
+            diagnostics["refreshLargestPixels"] = largest.pixelCount.toDouble()
+            diagnostics["refreshLargestWidth"] = largest.bounds.width
+            diagnostics["refreshLargestHeight"] = largest.bounds.height
+        }
+        val candidates = orangeComponents.filter { component ->
             val aspect = component.bounds.width / component.bounds.height
             component.pixelCount >= max(240, image.width * image.height / 18_000) &&
                 component.bounds.width >= 0.20 &&
-                aspect in 3.0..14.0
+                aspect in 3.0..20.0
         }
         val winner = candidates.maxByOrNull { it.pixelCount }
-            ?: return Recognition.unknown("refresh button not visible")
-        val confidence = (winner.pixelCount.toDouble() / (image.width * image.height / 7_000.0))
-            .coerceIn(0.0, 1.0).toFloat()
-        return Recognition(
-            value = winner.bounds,
-            confidence = confidence,
-            accepted = confidence >= 0.70f,
-            rejectionReason = "refresh confidence below threshold".takeIf { confidence < 0.70f },
+            ?: return Recognition.unknown<RefreshControlCandidate>("refresh button not visible").also {
+                resetRefreshStability()
+            }
+        val sizeConfidence = (winner.pixelCount.toDouble() / (image.width * image.height / 7_000.0))
+            .coerceIn(0.0, 1.0)
+        val aspect = winner.bounds.width / winner.bounds.height
+        // The Android navigation shade can clip the lower edge of this control and make the
+        // visible orange component unusually wide. Position + temporal stability remain strict.
+        val aspectConfidence = (1.0 - kotlin.math.abs(aspect - 8.0) / 16.0).coerceIn(0.0, 1.0)
+        val shapeConfidence = (sizeConfidence * 0.62 + aspectConfidence * 0.38).toFloat()
+        val center = winner.bounds.center
+        val centerDistance = kotlin.math.abs(center.x - 0.5) / 0.18 + kotlin.math.abs(center.y - 0.955) / 0.07
+        val positionConfidence = (1.0 - centerDistance / 2.0).coerceIn(0.0, 1.0).toFloat()
+        val badgeLeft = (winner.bounds.right - 0.06).coerceIn(0.0, 0.97)
+        val badgeTop = (winner.bounds.top - 0.035).coerceIn(0.0, 0.97)
+        val badgeRight = (winner.bounds.right + 0.025).coerceIn(badgeLeft + 0.001, 1.0)
+        val badgeBottom = (winner.bounds.top + 0.035).coerceIn(badgeTop + 0.001, 1.0)
+        val badgeRatio = colorRatio(
+            image,
+            NormalizedRect(badgeLeft, badgeTop, badgeRight, badgeBottom),
+            predicate = ::isBadgeRed,
         )
+        val badgeConfidence = scaled(badgeRatio, 0.04, 0.22).takeIf { it > 0f }
+        refreshStableFrames = if (previousRefreshBounds?.intersectionOverUnion(winner.bounds)?.let { it >= 0.72 } == true) {
+            refreshStableFrames + 1
+        } else 1
+        previousRefreshBounds = winner.bounds
+        val geometryConfidence = shapeConfidence * 0.55f + positionConfidence * 0.45f
+        val stabilityConfidence = if (refreshStableFrames >= 2) 1f else .5f
+        // A red badge is supporting evidence only; refresh remains valid when the badge is absent.
+        val confidence = (
+            geometryConfidence * 0.85f + stabilityConfidence * 0.15f + (badgeConfidence ?: 0f) * 0.05f
+        ).coerceIn(0f, 1f)
+        val candidate = RefreshControlCandidate(
+            bounds = winner.bounds,
+            orangeShapeConfidence = shapeConfidence,
+            positionConfidence = positionConfidence,
+            badgeConfidence = badgeConfidence,
+            stableFrames = refreshStableFrames,
+            overallConfidence = confidence,
+        )
+        diagnostics["refreshStableFrames"] = refreshStableFrames.toDouble()
+        diagnostics["refreshShapeConfidence"] = shapeConfidence.toDouble()
+        diagnostics["refreshPositionConfidence"] = positionConfidence.toDouble()
+        diagnostics["refreshOverallConfidence"] = confidence.toDouble()
+        return Recognition(
+            value = candidate,
+            confidence = confidence,
+            accepted = confidence >= 0.72f,
+            rejectionReason = "refresh confidence below alert threshold".takeIf { confidence < 0.72f },
+        )
+    }
+
+    private fun resetRefreshStability() {
+        previousRefreshBounds = null
+        refreshStableFrames = 0
     }
 
     private fun refreshOrangeComponents(image: ArgbImage, rect: NormalizedRect): List<VisualComponent> {
@@ -421,6 +482,11 @@ class RallyDetector(
     private fun isArtworkBlue(argb: Int): Boolean {
         val r = red(argb); val g = green(argb); val b = blue(argb)
         return b >= 125 && g >= 115 && b > r * 1.05 && g > r * 1.04
+    }
+
+    private fun isBadgeRed(argb: Int): Boolean {
+        val r = red(argb); val g = green(argb); val b = blue(argb)
+        return r >= 150 && r >= g * 1.35 && r >= b * 1.35 && g <= 130
     }
 }
 

@@ -15,6 +15,7 @@ import java.io.File
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
+import java.util.UUID
 
 enum class CaptureLabLabel {
     EVENT_EMPTY,
@@ -27,6 +28,7 @@ enum class CaptureLabLabel {
     MULTIPLE_TARGETS,
     TARGET_AND_NON_TARGET,
     REFRESH_REORDER,
+    TARGET_DISAPPEARS,
     SCROLLED_EVENT_LIST,
     SQUAD_FREE,
     SQUAD_MOVING,
@@ -63,6 +65,13 @@ data class CaptureLabMetadata(
 
 data class CaptureLabValidationSummary(
     val labelCounts: Map<CaptureLabLabel, Int>,
+    val uniqueScenarioCount: Int,
+    val uniqueRealRallyCount: Int,
+    val uniquePositiveTargetCount: Int,
+    val uniqueNegativeCount: Int,
+    val uniqueMultiRallyCount: Int,
+    val uniqueHoldoutScenarioCount: Int,
+    val unverifiedScenarioCount: Int,
     val shadowWouldAttempts: Int,
     val distinctTravelTimes: Set<Int>,
     val squadCounts: Map<CaptureLabLabel, Int>,
@@ -88,6 +97,7 @@ class CaptureLabStore(private val context: Context, private val windowMs: Long =
         val split: CaptureDatasetSplit,
         val startsAtMonotonicMs: Long,
         val endsAtMonotonicMs: Long,
+        val groundTruthConfirmed: Boolean,
     )
     private val frames = ArrayDeque<Frame>()
     private val directory get() = File(context.filesDir, "capture-lab")
@@ -104,6 +114,9 @@ class CaptureLabStore(private val context: Context, private val windowMs: Long =
     }
 
     fun isArmed(): Boolean = armed
+
+    @Synchronized
+    fun hasPendingScenario(): Boolean = pendingScenario != null
 
     @Synchronized
     fun add(
@@ -144,7 +157,13 @@ class CaptureLabStore(private val context: Context, private val windowMs: Long =
         }
         pendingScenario?.takeIf { analysis.observedAtMonotonicMs >= it.endsAtMonotonicMs }?.let { pending ->
             val snapshot = frames.filter { it.analysis.observedAtMonotonicMs >= pending.startsAtMonotonicMs }
-            saveSnapshot(pending.label, pending.optionalIntValue, pending.split, snapshot)
+            saveSnapshot(
+                pending.label,
+                pending.optionalIntValue,
+                pending.split,
+                snapshot,
+                pending.groundTruthConfirmed,
+            )
             pendingScenario = null
         }
     }
@@ -154,10 +173,18 @@ class CaptureLabStore(private val context: Context, private val windowMs: Long =
         label: CaptureLabLabel,
         optionalIntValue: Int? = null,
         split: CaptureDatasetSplit = CaptureDatasetSplit.TUNING,
+        groundTruthConfirmed: Boolean = true,
     ): Boolean {
         if (!armed || frames.isEmpty() || pendingScenario != null) return false
         val markedAt = frames.last().analysis.observedAtMonotonicMs
-        pendingScenario = PendingScenario(label, optionalIntValue, split, markedAt - 3_000, markedAt + 3_000)
+        pendingScenario = PendingScenario(
+            label,
+            optionalIntValue,
+            split,
+            markedAt - 3_000,
+            markedAt + 3_000,
+            groundTruthConfirmed,
+        )
         return true
     }
 
@@ -168,7 +195,7 @@ class CaptureLabStore(private val context: Context, private val windowMs: Long =
         split: CaptureDatasetSplit = CaptureDatasetSplit.TUNING,
     ): File? {
         if (!armed || frames.isEmpty()) return null
-        return saveSnapshot(label, optionalIntValue, split, frames.toList())
+        return saveSnapshot(label, optionalIntValue, split, frames.toList(), groundTruthConfirmed = true)
     }
 
     private fun saveSnapshot(
@@ -176,9 +203,11 @@ class CaptureLabStore(private val context: Context, private val windowMs: Long =
         optionalIntValue: Int?,
         split: CaptureDatasetSplit,
         snapshot: List<Frame>,
+        groundTruthConfirmed: Boolean,
     ): File? {
         if (snapshot.isEmpty()) return null
         directory.mkdirs()
+        val scenarioId = UUID.randomUUID().toString()
         val archive = File(directory, "${System.currentTimeMillis()}-${label.name.lowercase()}.zip")
         ZipOutputStream(archive.outputStream().buffered()).use { zip ->
             snapshot.forEachIndexed { index, frame ->
@@ -189,9 +218,11 @@ class CaptureLabStore(private val context: Context, private val windowMs: Long =
                 zip.closeEntry()
             }
             val manifest = JSONObject()
-                .put("schemaVersion", 3)
+                .put("schemaVersion", 4)
+                .put("scenarioId", scenarioId)
                 .put("label", label.name)
                 .put("datasetSplit", split.name)
+                .put("groundTruthConfirmed", groundTruthConfirmed)
                 .put("optionalIntValue", optionalIntValue ?: JSONObject.NULL)
                 .put("createdAtEpochMs", System.currentTimeMillis())
                 .put("frameCount", snapshot.size)
@@ -200,6 +231,17 @@ class CaptureLabStore(private val context: Context, private val windowMs: Long =
                 .toString()
             zip.putNextEntry(ZipEntry("manifest.json"))
             zip.write(manifest.toByteArray(Charsets.UTF_8))
+            zip.closeEntry()
+            val observation = JSONObject()
+                .put("schemaVersion", 1)
+                .put("scenarioId", scenarioId)
+                .put(if (groundTruthConfirmed) "label" else "suggestedLabel", label.name)
+                .put("optionalIntValue", optionalIntValue ?: JSONObject.NULL)
+                .put("groundTruthSource", if (groundTruthConfirmed) "manual_label" else "unverified_detector_trigger")
+                .put("confirmed", groundTruthConfirmed)
+                .toString()
+            zip.putNextEntry(ZipEntry(if (groundTruthConfirmed) "expected-scenario.json" else "observed-scenario.json"))
+            zip.write(observation.toByteArray(Charsets.UTF_8))
             zip.closeEntry()
         }
         return archive
@@ -229,22 +271,68 @@ class CaptureLabStore(private val context: Context, private val windowMs: Long =
     fun validationSummary(): CaptureLabValidationSummary {
         val labels = mutableMapOf<CaptureLabLabel, Int>()
         val shadowIds = mutableSetOf<String>()
+        val scenarioIds = mutableSetOf<String>()
+        val rallyIds = mutableSetOf<String>()
+        val positiveRallyIds = mutableSetOf<String>()
+        val negativeScenarioIds = mutableSetOf<String>()
+        val multiScenarioIds = mutableSetOf<String>()
+        val holdoutScenarioIds = mutableSetOf<String>()
         val travelTimes = mutableSetOf<Int>()
         var holdout = 0
+        var unverified = 0
         directory.listFiles { file -> file.extension.equals("zip", ignoreCase = true) }.orEmpty().forEach { archive ->
             runCatching {
                 ZipFile(archive).use { zip ->
                     val entry = zip.getEntry("manifest.json") ?: return@use
                     val manifest = JSONObject(zip.getInputStream(entry).bufferedReader().use { it.readText() })
                     val label = runCatching { CaptureLabLabel.valueOf(manifest.getString("label")) }.getOrNull()
+                    val scenarioId = manifest.optString("scenarioId").takeIf { it.isNotBlank() }
+                        ?: "legacy:${archive.name}"
+                    scenarioIds += scenarioId
+                    val confirmed = if (manifest.optInt("schemaVersion", 1) >= 4) {
+                        manifest.optBoolean("groundTruthConfirmed", false)
+                    } else true
+                    if (!confirmed) unverified++
                     if (label != null) labels[label] = (labels[label] ?: 0) + 1
-                    if (manifest.optString("datasetSplit") == CaptureDatasetSplit.HOLDOUT.name) holdout++
+                    if (manifest.optString("datasetSplit") == CaptureDatasetSplit.HOLDOUT.name) {
+                        holdout++
+                        holdoutScenarioIds += scenarioId
+                    }
+                    if (label in setOf(CaptureLabLabel.NON_TARGET, CaptureLabLabel.EVENT_EMPTY, CaptureLabLabel.UNKNOWN_UI)) {
+                        negativeScenarioIds += scenarioId
+                    }
+                    if (label in setOf(CaptureLabLabel.MULTIPLE_TARGETS, CaptureLabLabel.TARGET_AND_NON_TARGET)) {
+                        multiScenarioIds += scenarioId
+                    }
                     manifest.optInt("optionalIntValue", Int.MIN_VALUE).takeUnless { it == Int.MIN_VALUE }?.let { value ->
                         if (label == CaptureLabLabel.TRAVEL_TIME) travelTimes += value
                     }
                     val frameItems = manifest.optJSONArray("frames") ?: JSONArray()
                     for (index in 0 until frameItems.length()) {
-                        val shadow = frameItems.optJSONObject(index)?.optJSONObject("shadow") ?: continue
+                        val frame = frameItems.optJSONObject(index) ?: continue
+                        val rallies = frame.optJSONArray("rallies") ?: JSONArray()
+                        for (rallyIndex in 0 until rallies.length()) {
+                            val rally = rallies.optJSONObject(rallyIndex) ?: continue
+                            val identity = rally.optJSONObject("identity") ?: continue
+                            val title = identity.optString("targetTitleHash")
+                            val coordinates = identity.optString("coordinatesHash")
+                            if (title.isNotBlank() && coordinates.isNotBlank()) {
+                                val key = "$title:$coordinates"
+                                rallyIds += key
+                                if (label in setOf(
+                                        CaptureLabLabel.TARGET_LEVEL_5_JOINABLE,
+                                        CaptureLabLabel.TARGET_LEVEL_10_JOINABLE,
+                                        CaptureLabLabel.TARGET_OTHER_LEVEL_JOINABLE,
+                                        CaptureLabLabel.TARGET_FULL,
+                                        CaptureLabLabel.TARGET_ALREADY_JOINED,
+                                        CaptureLabLabel.MULTIPLE_TARGETS,
+                                        CaptureLabLabel.TARGET_AND_NON_TARGET,
+                                        CaptureLabLabel.TARGET_DISAPPEARS,
+                                    )
+                                ) positiveRallyIds += key
+                            }
+                        }
+                        val shadow = frame.optJSONObject("shadow") ?: continue
                         if (shadow.optString("phase") == "WOULD_START_JOIN_FLOW") {
                             shadow.optString("trackId").takeIf { it.isNotBlank() && it != "null" }
                                 ?.let { shadowIds += "${archive.name}:$it" }
@@ -263,11 +351,77 @@ class CaptureLabStore(private val context: Context, private val windowMs: Long =
         )
         return CaptureLabValidationSummary(
             labelCounts = labels,
+            uniqueScenarioCount = scenarioIds.size,
+            uniqueRealRallyCount = rallyIds.size,
+            uniquePositiveTargetCount = positiveRallyIds.size,
+            uniqueNegativeCount = negativeScenarioIds.size,
+            uniqueMultiRallyCount = multiScenarioIds.size,
+            uniqueHoldoutScenarioCount = holdoutScenarioIds.size,
+            unverifiedScenarioCount = unverified,
             shadowWouldAttempts = shadowIds.size,
             distinctTravelTimes = travelTimes,
             squadCounts = labels.filterKeys { it in squadLabels },
             holdoutArchives = holdout,
         )
+    }
+
+    fun confirmLatestUnverified(
+        label: CaptureLabLabel,
+        optionalIntValue: Int? = null,
+    ): Boolean {
+        val archive = directory.listFiles { file -> file.extension.equals("zip", ignoreCase = true) }
+            .orEmpty().sortedByDescending(File::lastModified).firstOrNull { file ->
+                runCatching {
+                    ZipFile(file).use { zip ->
+                        val manifest = zip.getEntry("manifest.json") ?: return@use false
+                        val json = JSONObject(zip.getInputStream(manifest).bufferedReader().use { it.readText() })
+                        !json.optBoolean("groundTruthConfirmed", false) && json.optString("label") == label.name
+                    }
+                }.getOrDefault(false)
+            } ?: return false
+        val replacement = File(directory, ".${archive.name}.confirming")
+        return runCatching {
+            ZipFile(archive).use { source ->
+                val originalManifest = JSONObject(
+                    source.getInputStream(requireNotNull(source.getEntry("manifest.json"))).bufferedReader().use { it.readText() },
+                )
+                val scenarioId = originalManifest.getString("scenarioId")
+                val confirmedManifest = originalManifest
+                    .put("label", label.name)
+                    .put("optionalIntValue", optionalIntValue ?: JSONObject.NULL)
+                    .put("groundTruthConfirmed", true)
+                ZipOutputStream(replacement.outputStream().buffered()).use { output ->
+                    source.entries().asSequence()
+                        .filterNot { it.name in setOf("manifest.json", "observed-scenario.json", "expected-scenario.json") }
+                        .forEach { entry ->
+                            output.putNextEntry(ZipEntry(entry.name))
+                            source.getInputStream(entry).use { it.copyTo(output) }
+                            output.closeEntry()
+                        }
+                    output.putNextEntry(ZipEntry("manifest.json"))
+                    output.write(confirmedManifest.toString().toByteArray(Charsets.UTF_8))
+                    output.closeEntry()
+                    output.putNextEntry(ZipEntry("expected-scenario.json"))
+                    output.write(
+                        JSONObject()
+                            .put("schemaVersion", 1)
+                            .put("scenarioId", scenarioId)
+                            .put("label", label.name)
+                            .put("optionalIntValue", optionalIntValue ?: JSONObject.NULL)
+                            .put("groundTruthSource", "manual_confirmation")
+                            .put("confirmed", true)
+                            .toString().toByteArray(Charsets.UTF_8),
+                    )
+                    output.closeEntry()
+                }
+            }
+            check(archive.delete()) { "cannot replace archive" }
+            check(replacement.renameTo(archive)) { "cannot activate confirmed archive" }
+            true
+        }.getOrElse {
+            replacement.delete()
+            false
+        }
     }
 
     private fun frameJson(frame: Frame): JSONObject {
@@ -289,6 +443,11 @@ class CaptureLabStore(private val context: Context, private val windowMs: Long =
                     .put("joinable", rally.joinable)
                     .put("full", rally.full ?: JSONObject.NULL)
                     .put("joinedState", rally.joinedState.name)
+                    .put("identity", rally.identityFingerprint?.let { identity ->
+                        JSONObject()
+                            .put("targetTitleHash", identity.targetTitleHash.toULong().toString(16))
+                            .put("coordinatesHash", identity.coordinatesHash.toULong().toString(16))
+                    } ?: JSONObject.NULL)
                     .put("cardBounds", rectJson(rally.cardBounds))
                     .put("joinPlusBounds", JSONArray(rally.joinPlusBounds.map(::rectJson)))
                     .put("confidence", JSONObject()
@@ -308,7 +467,12 @@ class CaptureLabStore(private val context: Context, private val windowMs: Long =
             .put("refreshButton", JSONObject()
                 .put("found", analysis.refreshButton.accepted)
                 .put("confidence", analysis.refreshButton.confidence.toDouble())
-                .put("bounds", analysis.refreshButton.value?.let(::rectJson) ?: JSONObject.NULL)
+                .put("bounds", analysis.refreshButton.value?.bounds?.let(::rectJson) ?: JSONObject.NULL)
+                .put("stableFrames", analysis.refreshButton.value?.stableFrames ?: JSONObject.NULL)
+                .put("overallConfidence", analysis.refreshButton.value?.overallConfidence?.toDouble() ?: JSONObject.NULL)
+                .put("orangeShapeConfidence", analysis.refreshButton.value?.orangeShapeConfidence?.toDouble() ?: JSONObject.NULL)
+                .put("positionConfidence", analysis.refreshButton.value?.positionConfidence?.toDouble() ?: JSONObject.NULL)
+                .put("badgeConfidence", analysis.refreshButton.value?.badgeConfidence?.toDouble() ?: JSONObject.NULL)
                 .put("rejectionReason", analysis.refreshButton.rejectionReason ?: JSONObject.NULL))
             .put("currentTracks", JSONArray(frame.currentTracks.map { track ->
                 JSONObject()

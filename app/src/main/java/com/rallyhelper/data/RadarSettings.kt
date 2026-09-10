@@ -9,6 +9,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import radar.vision.RuntimeMode
+import radar.vision.RefreshMode
 
 private val Context.radarDataStore by preferencesDataStore("radar_settings")
 
@@ -20,6 +21,7 @@ data class RadarSettings(
     val vibrationEnabled: Boolean = true,
     val overlayEnabled: Boolean = false,
     val mode: RuntimeMode = RuntimeMode.RADAR,
+    val refreshMode: RefreshMode = RefreshMode.OFF,
     val debugMode: DebugCaptureMode = DebugCaptureMode.FAILURES,
     val retentionDays: Int = 3,
     val delayMinSeconds: Int = 0,
@@ -29,6 +31,7 @@ data class RadarSettings(
     val safetyMarginSeconds: Int = 3,
     val calibrationProfile: String = "reference-1280x2800-v2",
     val captureLabArmed: Boolean = false,
+    val evidenceCollectorEnabled: Boolean = false,
 )
 
 class RadarSettingsStore(private val context: Context) {
@@ -41,6 +44,8 @@ class RadarSettingsStore(private val context: Context) {
             overlayEnabled = values[Keys.OVERLAY] ?: false,
             mode = values[Keys.MODE]?.let { runCatching { RuntimeMode.valueOf(it) }.getOrNull() }
                 ?: RuntimeMode.RADAR,
+            refreshMode = values[Keys.REFRESH_MODE]?.let { runCatching { RefreshMode.valueOf(it) }.getOrNull() }
+                ?: RefreshMode.OFF,
             debugMode = values[Keys.DEBUG]?.let { runCatching { DebugCaptureMode.valueOf(it) }.getOrNull() }
                 ?: DebugCaptureMode.FAILURES,
             retentionDays = (values[Keys.RETENTION] ?: 3).coerceIn(1, 7),
@@ -51,6 +56,7 @@ class RadarSettingsStore(private val context: Context) {
             safetyMarginSeconds = (values[Keys.SAFETY_MARGIN] ?: 3).coerceIn(0, MAX_SAFETY_MARGIN_SECONDS),
             calibrationProfile = values[Keys.CALIBRATION] ?: "reference-1280x2800-v2",
             captureLabArmed = values[Keys.CAPTURE_LAB_ARMED] ?: false,
+            evidenceCollectorEnabled = values[Keys.EVIDENCE_COLLECTOR] ?: false,
         ).normalized()
     }
 
@@ -67,6 +73,10 @@ class RadarSettingsStore(private val context: Context) {
 
     suspend fun setMode(mode: RuntimeMode) {
         context.radarDataStore.edit { it[Keys.MODE] = mode.name }
+    }
+
+    suspend fun setRefreshMode(mode: RefreshMode) {
+        context.radarDataStore.edit { it[Keys.REFRESH_MODE] = mode.name }
     }
 
     suspend fun setSoundEnabled(enabled: Boolean) {
@@ -107,12 +117,17 @@ class RadarSettingsStore(private val context: Context) {
         context.radarDataStore.edit { it[Keys.CAPTURE_LAB_ARMED] = armed }
     }
 
+    suspend fun setEvidenceCollectorEnabled(enabled: Boolean) {
+        context.radarDataStore.edit { it[Keys.EVIDENCE_COLLECTOR] = enabled }
+    }
+
     private object Keys {
         val LEVELS = stringPreferencesKey("selected_levels")
         val SOUND = booleanPreferencesKey("sound_enabled")
         val VIBRATION = booleanPreferencesKey("vibration_enabled")
         val OVERLAY = booleanPreferencesKey("overlay_enabled")
         val MODE = stringPreferencesKey("runtime_mode")
+        val REFRESH_MODE = stringPreferencesKey("refresh_mode")
         val DEBUG = stringPreferencesKey("debug_capture_mode")
         val RETENTION = intPreferencesKey("debug_retention_days")
         val DELAY_MIN = intPreferencesKey("auto_delay_min_seconds")
@@ -122,6 +137,7 @@ class RadarSettingsStore(private val context: Context) {
         val SAFETY_MARGIN = intPreferencesKey("safety_margin_seconds")
         val CALIBRATION = stringPreferencesKey("calibration_profile")
         val CAPTURE_LAB_ARMED = booleanPreferencesKey("capture_lab_armed")
+        val EVIDENCE_COLLECTOR = booleanPreferencesKey("evidence_collector_enabled")
     }
 
     companion object {

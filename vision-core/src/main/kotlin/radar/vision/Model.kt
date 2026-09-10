@@ -6,6 +6,17 @@ enum class BossType { TARGET, NON_TARGET, UNKNOWN }
 
 enum class JoinedState { JOINABLE, ALREADY_JOINED, FULL, NOT_TARGET, UNKNOWN }
 
+enum class RefreshMode { OFF, ALERT_ONLY, AUTO_REFRESH }
+
+data class RefreshControlCandidate(
+    val bounds: NormalizedRect,
+    val orangeShapeConfidence: Float,
+    val positionConfidence: Float,
+    val badgeConfidence: Float?,
+    val stableFrames: Int,
+    val overallConfidence: Float,
+)
+
 data class NormalizedPoint(val x: Double, val y: Double) {
     init {
         require(x in 0.0..1.0 && y in 0.0..1.0)
@@ -123,7 +134,7 @@ data class FrameAnalysis(
     val rallies: List<RallyCandidate> = emptyList(),
     val travelTime: Recognition<Int> = Recognition.unknown("not a march screen"),
     val sendButtonFound: Boolean = false,
-    val refreshButton: Recognition<NormalizedRect> = Recognition.unknown("not an event-list screen"),
+    val refreshButton: Recognition<RefreshControlCandidate> = Recognition.unknown("not an event-list screen"),
     val squads: List<SquadInfo> = emptyList(),
     val diagnostics: Map<String, Double> = emptyMap(),
 )

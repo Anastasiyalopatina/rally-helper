@@ -17,10 +17,14 @@
 | Relaxed alert cannot authorize action | pass |
 | Pending cancellation is not a completed attempt | pass |
 | Policy state resets between sessions | pass |
-| Room migrations 1→2 / 2→3 / 1→3 | 3/3 pass on physical device |
+| Refresh OFF / alert-only / guarded-auto contract | pass |
+| Wrong package / stale / expired gesture rejection | pass |
+| Persistent refresh bounded to two requests | pass |
+| Deterministic replay infrastructure | pass |
+| Room migrations 1→2 / 2→3 / 1→3 / 3→4 / 1→4 | 5/5 pass on physical device |
 | Raw screenshots in debug APK | 0 |
 | Android compile / lint | pass |
-| Room schema export | v3 |
+| Room schema export | v4 |
 
 Synthetic mutations cover brightness, contrast, slight scale, translation, JPEG compression, mild blur, inset shift, and harmless occlusion. They are robustness tests, not a real holdout.
 
@@ -37,7 +41,7 @@ Synthetic mutations cover brightness, contrast, slight scale, translation, JPEG 
 | Median / p95 detector latency | NOT_RUN |
 | Frame drop rate | NOT_RUN |
 
-An intermediate device candidate completed a bounded smoke and a continuous RADAR stability run beyond 30 minutes without latest-frame queue drops. Exact device measurements are intentionally not published. This is not an independent holdout and did not exercise the required functional scenario matrix. Independent holdout, recorded sequences, 100 shadow decisions, and the final release-candidate endurance are not yet complete. See `DEVICE_TEST_REPORT.md`.
+Earlier device candidates completed bounded smoke and stability checks without latest-frame queue drops. Exact device measurements are intentionally not published. Those runs are not independent holdout and did not exercise the critical real-case matrix. The current gate is based on unique confirmed scenarios plus deterministic replay, not elapsed watching time or a quota of Shadow decisions. See `CURRENT_STATE.md`.
 
 ## Phase C2 live observation
 

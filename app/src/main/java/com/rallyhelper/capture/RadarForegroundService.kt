@@ -38,6 +38,8 @@ import com.rallyhelper.debug.CaptureLabLabel
 import com.rallyhelper.debug.CaptureDatasetSplit
 import com.rallyhelper.debug.CaptureLabMetadata
 import com.rallyhelper.debug.CaptureLabStore
+import com.rallyhelper.debug.GuidedValidationStatus
+import com.rallyhelper.debug.GuidedValidationStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -54,6 +56,7 @@ import radar.vision.FrameAnalysis
 import radar.vision.JoinedState
 import radar.vision.RallyTracker
 import radar.vision.RefreshCoordinator
+import radar.vision.RefreshMode
 import radar.vision.RadarAlertPolicy
 import radar.vision.RuntimeMode
 import radar.vision.SafetyPolicy
@@ -62,6 +65,7 @@ import radar.vision.ShadowAutoCoordinator
 import radar.vision.ShadowAutoPhase
 import radar.vision.ShadowAutoUpdate
 import radar.vision.ScreenState
+import radar.vision.SquadState
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -80,6 +84,7 @@ class RadarForegroundService : Service() {
     private val detector by lazy { RadarDetectorFactory.create(applicationContext) }
     private val debugStore by lazy { DebugCaptureStore(applicationContext) }
     private val captureLabStore by lazy { CaptureLabStore(applicationContext) }
+    private val guidedValidationStore by lazy { GuidedValidationStore(applicationContext) }
     private val settingsStore by lazy { RadarSettingsStore(applicationContext) }
     private val repository by lazy { RadarRepository.create(applicationContext) }
     private val overlay by lazy {
@@ -112,15 +117,13 @@ class RadarForegroundService : Service() {
     private val selectedDelayByRally = mutableMapOf<String, Int>()
     private val skipDecisionByRally = mutableMapOf<String, Boolean>()
     private val debuggedTargets = mutableSetOf<String>()
+    private val evidenceKeys = mutableSetOf<String>()
     private val recentLatencies = ArrayDeque<Long>()
     private var latencyTotalMs = 0L
     private var latencySamples = 0L
     private var safetyRejectCount = 0L
     private var visionRejectCount = 0L
     private var safetyAbortCount = 0L
-    private val refreshRequestCount = AtomicLong()
-    private val refreshSuccessCount = AtomicLong()
-    private val refreshFailureCount = AtomicLong()
     private var sessionId: Long? = null
     private var captureWidth = 0
     private var captureHeight = 0
@@ -171,6 +174,16 @@ class RadarForegroundService : Service() {
             }
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_GUIDED_VALIDATION) {
+            val case = intent.getStringExtra(EXTRA_GUIDED_CASE)
+                ?.let { id -> GuidedValidationStore.CASES.firstOrNull { it.id == id } }
+            if (case != null) {
+                guidedValidationStore.start(case, android.os.SystemClock.elapsedRealtime())
+                captureLabStore.setArmed(true)
+                RadarRuntime.update { it.copy(message = "${case.id}: bounded observation 45 sec") }
+            }
+            return START_NOT_STICKY
+        }
         if (intent?.action != ACTION_START || capture != null) return START_NOT_STICKY
         val initialSettings = runBlocking(Dispatchers.IO) { settingsStore.settings.first() }
         applySettings(initialSettings)
@@ -192,6 +205,10 @@ class RadarForegroundService : Service() {
     private fun applySettings(updated: RadarSettings) {
         val previous = settings.get()
         settings.set(updated)
+        if (previous.refreshMode != updated.refreshMode) {
+            refreshCoordinator.cancelPending()
+            GestureActionController.cancelAll()
+        }
         val policyConfig = AutoPolicyConfig(
             delayMinSeconds = updated.delayMinSeconds,
             delayMaxSeconds = updated.delayMaxSeconds,
@@ -202,7 +219,10 @@ class RadarForegroundService : Service() {
             shadowCoordinator.updateConfig(policyConfig)
             appliedAutoConfig = policyConfig
         }
-        captureLabStore.setArmed(updated.captureLabArmed)
+        captureLabStore.setArmed(
+            updated.captureLabArmed || updated.evidenceCollectorEnabled ||
+                guidedValidationStore.active() != null || captureLabStore.hasPendingScenario(),
+        )
         if (previous.mode.isAutoLoop() && !updated.mode.isAutoLoop()) {
             shadowCoordinator.pause()
             automationPaused = false
@@ -226,7 +246,7 @@ class RadarForegroundService : Service() {
             shadowCoordinator.resume(lastAnalyzedFrameId)
         }
         overlay.setEnabled(updated.overlayEnabled)
-        RadarRuntime.update { it.copy(mode = updated.mode) }
+        RadarRuntime.update { it.copy(mode = updated.mode, refreshMode = updated.refreshMode) }
     }
 
     private fun resetSessionState(currentSettings: RadarSettings) {
@@ -251,23 +271,25 @@ class RadarForegroundService : Service() {
         selectedDelayByRally.clear()
         skipDecisionByRally.clear()
         debuggedTargets.clear()
+        evidenceKeys.clear()
         recentLatencies.clear()
         latencyTotalMs = 0
         latencySamples = 0
         safetyRejectCount = 0
         visionRejectCount = 0
         safetyAbortCount = 0
-        refreshRequestCount.set(0)
-        refreshSuccessCount.set(0)
-        refreshFailureCount.set(0)
         lastAbortReason = null
-        RadarRuntime.resetForSession(currentSettings.mode)
+        RadarRuntime.resetForSession(currentSettings.mode, currentSettings.refreshMode)
     }
 
     private fun toggleAutomationPause() = setAutomationPaused(!automationPaused)
 
     private fun setAutomationPaused(value: Boolean) {
         automationPaused = value
+        if (value) {
+            refreshCoordinator.cancelPending()
+            GestureActionController.cancelAll()
+        }
         if (value) shadowCoordinator.pause() else shadowCoordinator.resume(lastAnalyzedFrameId)
         RadarRuntime.update {
             it.copy(
@@ -442,7 +464,7 @@ class RadarForegroundService : Service() {
                     val observedMs = android.os.SystemClock.elapsedRealtime()
                     val analysis = detector.analyze(argbImage, frameIds.incrementAndGet(), observedMs)
                     lastAnalyzedFrameId = analysis.frameId
-                    maybeDispatchRefresh(analysis)
+                    val refreshMessage = handleRefresh(analysis, currentSettings)
                     if (analysis.screen == ScreenState.UNKNOWN) recordAbortOnce("screen:UNKNOWN") else lastAbortReason = null
                     val tracking = tracker.update(analysis)
                     val visibleNow = tracking.active.filter {
@@ -492,7 +514,7 @@ class RadarForegroundService : Service() {
                     val shadowUpdate = if (currentSettings.mode == RuntimeMode.SHADOW_AUTO || currentSettings.mode == RuntimeMode.AUTO) {
                         shadowCoordinator.onFrame(analysis, tracking, actionDecisions).also(::recordShadowUpdate)
                     } else ShadowAutoUpdate(ShadowAutoPhase.IDLE)
-                    if (currentSettings.captureLabArmed) {
+                    if (captureLabStore.isArmed()) {
                         frameBuffer.snapshotDownscaled().also { small ->
                             captureLabStore.add(
                                 bitmap = small,
@@ -525,6 +547,7 @@ class RadarForegroundService : Service() {
                             small.recycle()
                         }
                     }
+                    handleGuidedAndEvidence(analysis, visibleNow, tracking.expired, currentSettings)
                     val overlayRallyId = shadowUpdate.rallyId
                         ?: decisions.firstOrNull { it.kind == DecisionKind.WOULD_SELECT }?.rallyId
                     val overlayRally = overlayRallyId?.let { id ->
@@ -589,14 +612,22 @@ class RadarForegroundService : Service() {
                             safetyRejects = safetyRejectCount,
                             visionRejects = visionRejectCount,
                             safetyAborts = safetyAbortCount,
-                            refreshRequests = refreshRequestCount.get(),
-                            refreshSuccesses = refreshSuccessCount.get(),
-                            refreshFailures = refreshFailureCount.get(),
+                            refreshDetected = refreshCoordinator.metrics().detected,
+                            refreshRequests = refreshCoordinator.metrics().requests,
+                            refreshGestureAccepted = refreshCoordinator.metrics().gestureAccepted,
+                            refreshGestureCompleted = refreshCoordinator.metrics().gestureCompleted,
+                            refreshVerifiedSuccesses = refreshCoordinator.metrics().verifiedSuccess,
+                            refreshVerifiedFailures = refreshCoordinator.metrics().verifiedFailure,
+                            refreshSafetyRejects = refreshCoordinator.metrics().rejectedBySafety,
+                            refreshAlerts = refreshCoordinator.metrics().alerts,
+                            refreshStuck = refreshCoordinator.metrics().stuck,
                             averageLatencyMs = if (latencySamples == 0L) null else latencyTotalMs / latencySamples,
                             p50LatencyMs = sortedLatencies.percentile(0.50),
                             p95LatencyMs = sortedLatencies.percentile(0.95),
                             mode = currentSettings.mode,
+                            refreshMode = currentSettings.refreshMode,
                             message = when {
+                                refreshMessage != null -> refreshMessage
                                 automationPaused -> "Автоматизация на паузе; Radar и уведомления продолжают работать"
                                 currentSettings.mode == RuntimeMode.SHADOW_AUTO ->
                                     "Shadow ${shadowUpdate.phase}: ${shadowUpdate.reason ?: "наблюдение"}"
@@ -620,47 +651,192 @@ class RadarForegroundService : Service() {
         }
     }
 
-    private fun maybeDispatchRefresh(analysis: FrameAnalysis) {
-        if (automationPaused) {
-            refreshCoordinator.reset()
-            return
-        }
-        val request = refreshCoordinator.onFrame(analysis) ?: return
-        refreshRequestCount.incrementAndGet()
-        Log.i(REFRESH_LOG_TAG, "request frame=${request.frameId}")
-        val accepted = GestureActionController.tap(
-            point = request.targetBounds.center,
-            displayWidth = captureWidth,
-            displayHeight = captureHeight,
-        ) { succeeded ->
-            if (succeeded) {
-                refreshSuccessCount.incrementAndGet()
-            } else {
-                refreshFailureCount.incrementAndGet()
-                refreshCoordinator.onDispatchFailed(request.frameId)
+    private fun handleGuidedAndEvidence(
+        analysis: FrameAnalysis,
+        visibleTracks: List<radar.vision.TrackedRally>,
+        expired: List<radar.vision.RallyId>,
+        currentSettings: RadarSettings,
+    ) {
+        guidedValidationStore.active()?.let { active ->
+            val elapsed = analysis.observedAtMonotonicMs - active.startedAtMonotonicMs
+            if (elapsed >= GuidedValidationStore.WINDOW_MS) {
+                guidedValidationStore.finish(active.case, GuidedValidationStatus.NOT_OBSERVED)
+                RadarRuntime.update { it.copy(message = "${active.case.id}: NOT_OBSERVED; 45 sec session finished") }
+            } else if (matchesGuidedCase(active.case.id, analysis, expired)) {
+                val optionalValue = analysis.travelTime.value.takeIf { active.case.id.startsWith("T") }
+                if (captureLabStore.markScenario(
+                        active.case.captureLabel,
+                        optionalValue,
+                        CaptureDatasetSplit.TUNING,
+                        groundTruthConfirmed = false,
+                    )
+                ) {
+                    guidedValidationStore.finish(active.case, GuidedValidationStatus.AWAITING_CONFIRMATION)
+                    RadarRuntime.update { it.copy(message = "${active.case.id}: sequence captured; confirm ground truth") }
+                }
             }
-            Log.i(REFRESH_LOG_TAG, "result frame=${request.frameId} success=$succeeded")
-            RadarRuntime.update {
-                it.copy(
-                    refreshRequests = refreshRequestCount.get(),
-                    refreshSuccesses = refreshSuccessCount.get(),
-                    refreshFailures = refreshFailureCount.get(),
-                    message = if (succeeded) "Список событий обновлён" else "Refresh не выполнен: проверьте спецвозможность",
+        }
+        if (currentSettings.evidenceCollectorEnabled) maybeCollectEvidence(analysis, visibleTracks, expired)
+        if (
+            guidedValidationStore.active() == null && !currentSettings.captureLabArmed &&
+            !currentSettings.evidenceCollectorEnabled && !captureLabStore.hasPendingScenario()
+        ) captureLabStore.setArmed(false)
+    }
+
+    private fun matchesGuidedCase(
+        id: String,
+        analysis: FrameAnalysis,
+        expired: List<radar.vision.RallyId>,
+    ): Boolean = when (id) {
+        "R1" -> analysis.rallies.any { it.bossType == BossType.TARGET && it.level == 5 && it.joinedState == JoinedState.JOINABLE }
+        "R2" -> analysis.rallies.any { it.bossType == BossType.TARGET && it.level == 10 && it.joinedState == JoinedState.JOINABLE }
+        "R3" -> analysis.rallies.any { it.bossType == BossType.NON_TARGET && it.joinPlusBounds.isNotEmpty() }
+        "R4" -> analysis.rallies.any { it.bossType == BossType.TARGET && it.joinedState == JoinedState.FULL }
+        "R5" -> analysis.rallies.any { it.bossType == BossType.TARGET && (it.joinPlusBounds.isEmpty() || it.joinedState == JoinedState.ALREADY_JOINED) }
+        "R6" -> analysis.rallies.size >= 2
+        "R7" -> analysis.refreshButton.accepted
+        "R8" -> expired.any { lastCandidateById[it.value]?.bossType == BossType.TARGET }
+        "M1" -> analysis.screen == ScreenState.MARCH_SCREEN
+        "S1" -> analysis.squads.any { it.state == SquadState.FREE }
+        "S2" -> analysis.squads.any { it.state in setOf(SquadState.MOVING, SquadState.GATHERING, SquadState.OCCUPIED_OTHER) }
+        "S3" -> analysis.squads.any { it.state == SquadState.RETURNING }
+        else -> id.startsWith("T") && analysis.travelTime.accepted && analysis.travelTime.value != null
+    }
+
+    private fun maybeCollectEvidence(
+        analysis: FrameAnalysis,
+        tracks: List<radar.vision.TrackedRally>,
+        expired: List<radar.vision.RallyId>,
+    ) {
+        data class Evidence(val key: String, val label: CaptureLabLabel, val value: Int? = null)
+        val candidates = mutableListOf<Evidence>()
+        tracks.forEach { track ->
+            val rally = track.candidate
+            val id = track.id.value
+            if (rally.bossType == BossType.TARGET && rally.level == 5 && rally.joinedState == JoinedState.JOINABLE) {
+                candidates += Evidence("$id:target-l5", CaptureLabLabel.TARGET_LEVEL_5_JOINABLE)
+            }
+            if (rally.bossType == BossType.TARGET && rally.level == 10 && rally.joinedState == JoinedState.JOINABLE) {
+                candidates += Evidence("$id:target-l10", CaptureLabLabel.TARGET_LEVEL_10_JOINABLE)
+            }
+            if (rally.bossType == BossType.NON_TARGET && rally.joinPlusBounds.isNotEmpty()) {
+                candidates += Evidence("$id:non-target-plus", CaptureLabLabel.NON_TARGET)
+            }
+            if (rally.bossType == BossType.TARGET && rally.joinedState == JoinedState.FULL) {
+                candidates += Evidence("$id:full", CaptureLabLabel.TARGET_FULL)
+            }
+            val previous = lastCandidateById[id]
+            if (previous?.joinPlusBounds?.isNotEmpty() == true && rally.joinPlusBounds.isEmpty()) {
+                candidates += Evidence("$id:plus-disappeared", CaptureLabLabel.TARGET_ALREADY_JOINED)
+            }
+            if (rally.bossType == BossType.UNKNOWN && rally.confidences.card >= .85f) {
+                candidates += Evidence("$id:unknown-conflict", CaptureLabLabel.UNKNOWN_UI)
+            }
+        }
+        if (analysis.rallies.size >= 2) {
+            candidates += Evidence("multi:${tracks.map { it.id.value }.sorted()}", CaptureLabLabel.MULTIPLE_TARGETS)
+        }
+        if (analysis.refreshButton.accepted) candidates += Evidence("refresh-control", CaptureLabLabel.REFRESH_REORDER)
+        if (expired.any { lastCandidateById[it.value]?.bossType == BossType.TARGET }) {
+            candidates += Evidence("target-expired:${expired.joinToString { it.value }}", CaptureLabLabel.TARGET_DISAPPEARS)
+        }
+        if (analysis.screen == ScreenState.MARCH_SCREEN) candidates += Evidence("march-screen", CaptureLabLabel.MARCH_SCREEN)
+        analysis.squads.forEach { squad ->
+            val label = when (squad.state) {
+                SquadState.FREE -> CaptureLabLabel.SQUAD_FREE
+                SquadState.MOVING -> CaptureLabLabel.SQUAD_MOVING
+                SquadState.RETURNING -> CaptureLabLabel.SQUAD_RETURNING
+                SquadState.GATHERING -> CaptureLabLabel.SQUAD_GATHERING
+                SquadState.OCCUPIED_OTHER, SquadState.LOCKED -> CaptureLabLabel.SQUAD_OTHER_BUSY
+                SquadState.UNKNOWN -> CaptureLabLabel.SQUAD_UNKNOWN
+            }
+            candidates += Evidence("squad:${squad.slotIndex}:${squad.state}", label)
+        }
+        analysis.travelTime.value?.takeIf { analysis.travelTime.accepted }?.let { seconds ->
+            candidates += Evidence("travel:$seconds", CaptureLabLabel.TRAVEL_TIME, seconds)
+        }
+        candidates.firstOrNull { it.key !in evidenceKeys }?.let { evidence ->
+            if (captureLabStore.markScenario(
+                    evidence.label,
+                    evidence.value,
+                    CaptureDatasetSplit.TUNING,
+                    groundTruthConfirmed = false,
                 )
-            }
+            ) evidenceKeys += evidence.key
         }
-        if (!accepted) {
-            refreshFailureCount.incrementAndGet()
-            refreshCoordinator.onDispatchFailed(request.frameId)
-            Log.i(REFRESH_LOG_TAG, "result frame=${request.frameId} success=false unavailable=true")
-            RadarRuntime.update {
-                it.copy(
-                    refreshRequests = refreshRequestCount.get(),
-                    refreshFailures = refreshFailureCount.get(),
-                    message = "Включите Rally Helper · Refresh в спецвозможностях Android",
-                )
-            }
+    }
+
+    private fun handleRefresh(analysis: FrameAnalysis, currentSettings: RadarSettings): String? {
+        val evaluation = refreshCoordinator.onFrame(
+            frame = analysis,
+            mode = currentSettings.refreshMode,
+            expectedPackage = BuildConfig.VERIFIED_TARGET_PACKAGE,
+        )
+        if (evaluation.shouldAlert) emitRefreshAlert(currentSettings)
+        evaluation.request?.let { request ->
+            Log.i(REFRESH_LOG_TAG, "request id=${request.requestId} frame=${request.sourceFrameId}")
+            GestureActionController.dispatch(
+                request = request,
+                displayWidth = captureWidth,
+                displayHeight = captureHeight,
+                verifiedPackage = BuildConfig.VERIFIED_TARGET_PACKAGE,
+                onAccepted = {
+                    refreshCoordinator.onGestureAccepted(request.requestId)
+                    updateRefreshRuntime("Refresh-жест принят Android; ждём визуальную проверку")
+                },
+                onRejected = { reason ->
+                    refreshCoordinator.onGestureRejected(request.requestId)
+                    Log.w(REFRESH_LOG_TAG, "rejected id=${request.requestId} reason=$reason")
+                    updateRefreshRuntime("Refresh отклонён безопасностью: $reason")
+                },
+                onCompleted = { completed, completedAt ->
+                    refreshCoordinator.onGestureCompleted(request.requestId, completedAt, completed)
+                    Log.i(REFRESH_LOG_TAG, "completed id=${request.requestId} completed=$completed")
+                    updateRefreshRuntime(
+                        if (completed) "Refresh-жест завершён; успех ещё не подтверждён"
+                        else "Refresh-жест отменён; разрешена одна ограниченная повторная попытка",
+                    )
+                },
+            )
         }
+        return when {
+            evaluation.autoRefreshPaused -> "REFRESH_STUCK: автообновление остановлено до исчезновения кнопки"
+            evaluation.verifiedSuccess -> "Refresh подтверждён изменением интерфейса"
+            evaluation.verifiedFailure -> "Refresh не подтверждён интерфейсом"
+            evaluation.shouldAlert -> "Доступно обновление списка"
+            else -> null
+        }
+    }
+
+    private fun updateRefreshRuntime(message: String) {
+        val metrics = refreshCoordinator.metrics()
+        RadarRuntime.update {
+            it.copy(
+                refreshDetected = metrics.detected,
+                refreshRequests = metrics.requests,
+                refreshGestureAccepted = metrics.gestureAccepted,
+                refreshGestureCompleted = metrics.gestureCompleted,
+                refreshVerifiedSuccesses = metrics.verifiedSuccess,
+                refreshVerifiedFailures = metrics.verifiedFailure,
+                refreshSafetyRejects = metrics.rejectedBySafety,
+                refreshAlerts = metrics.alerts,
+                refreshStuck = metrics.stuck,
+                message = message,
+            )
+        }
+    }
+
+    private fun emitRefreshAlert(currentSettings: RadarSettings) {
+        if (currentSettings.soundEnabled) alertSound.play()
+        if (currentSettings.vibrationEnabled) {
+            val vibrator = getSystemService(Vibrator::class.java)
+            if (Build.VERSION.SDK_INT >= 26) vibrator.vibrate(VibrationEffect.createOneShot(90, 70))
+            else @Suppress("DEPRECATION") vibrator.vibrate(90)
+        }
+        getSystemService(NotificationManager::class.java).notify(
+            NOTIFICATION_ID,
+            notification("Доступно обновление списка"),
+        )
     }
 
     private fun persistMeaningfulEvents(
@@ -798,6 +974,8 @@ class RadarForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        refreshCoordinator.cancelPending()
+        GestureActionController.cancelAll()
         pending.getAndSet(null)?.close()
         capture?.close(); capture = null
         projection?.stop(); projection = null
@@ -873,11 +1051,13 @@ class RadarForegroundService : Service() {
         private const val ACTION_PAUSE = "com.rallyhelper.PAUSE_AUTOMATION"
         private const val ACTION_RESUME = "com.rallyhelper.RESUME_AUTOMATION"
         private const val ACTION_CAPTURE_LAB = "com.rallyhelper.SAVE_CAPTURE_LAB"
+        private const val ACTION_GUIDED_VALIDATION = "com.rallyhelper.GUIDED_VALIDATION"
         private const val EXTRA_RESULT_CODE = "result_code"
         private const val EXTRA_RESULT_DATA = "result_data"
         private const val EXTRA_CAPTURE_LABEL = "capture_label"
         private const val EXTRA_CAPTURE_VALUE = "capture_value"
         private const val EXTRA_CAPTURE_SPLIT = "capture_split"
+        private const val EXTRA_GUIDED_CASE = "guided_case"
         private const val CHANNEL_ID = "radar"
         private const val NOTIFICATION_ID = 42
 
@@ -897,6 +1077,11 @@ class RadarForegroundService : Service() {
                 .putExtra(EXTRA_CAPTURE_LABEL, label.name)
                 .putExtra(EXTRA_CAPTURE_SPLIT, split.name)
                 .apply { optionalIntValue?.let { putExtra(EXTRA_CAPTURE_VALUE, it) } }
+
+        fun guidedValidationIntent(context: Context, caseId: String) =
+            Intent(context, RadarForegroundService::class.java)
+                .setAction(ACTION_GUIDED_VALIDATION)
+                .putExtra(EXTRA_GUIDED_CASE, caseId)
     }
 }
 

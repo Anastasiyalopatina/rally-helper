@@ -59,9 +59,12 @@ import com.rallyhelper.debug.CaptureLabLabel
 import com.rallyhelper.debug.CaptureDatasetSplit
 import com.rallyhelper.debug.CaptureLabStore
 import com.rallyhelper.debug.DebugCaptureStore
+import com.rallyhelper.debug.GuidedValidationStatus
+import com.rallyhelper.debug.GuidedValidationStore
 import com.rallyhelper.input.GestureActionController
 import kotlinx.coroutines.launch
 import radar.vision.RuntimeMode
+import radar.vision.RefreshMode
 import kotlin.math.roundToInt
 import java.io.File
 
@@ -90,6 +93,8 @@ class MainActivity : ComponentActivity() {
         var captureLabel by remember { mutableStateOf(CaptureLabLabel.UNKNOWN_UI) }
         var captureValueText by remember { mutableStateOf("") }
         val captureLabFiles = remember { CaptureLabStore(this@MainActivity) }
+        val guidedValidation = remember { GuidedValidationStore(this@MainActivity) }
+        var guidedRevision by remember { mutableStateOf(0) }
         var captureSplit by remember { mutableStateOf(CaptureDatasetSplit.TUNING) }
         var validationSummary by remember { mutableStateOf(captureLabFiles.validationSummary()) }
         var pendingExportPath by remember { mutableStateOf<String?>(null) }
@@ -210,13 +215,48 @@ class MainActivity : ComponentActivity() {
                             )
                         }) { Text("Разрешить overlay в Android") }
                     }
+                }
+
+                SettingsCard("Обновление списка") {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ModeButton("Выключено", settings.refreshMode == RefreshMode.OFF) {
+                            scope.launch { settingsStore.setRefreshMode(RefreshMode.OFF) }
+                        }
+                        ModeButton("Сообщать", settings.refreshMode == RefreshMode.ALERT_ONLY) {
+                            scope.launch { settingsStore.setRefreshMode(RefreshMode.ALERT_ONLY) }
+                        }
+                        ModeButton("Авто", settings.refreshMode == RefreshMode.AUTO_REFRESH) {
+                            scope.launch { settingsStore.setRefreshMode(RefreshMode.AUTO_REFRESH) }
+                        }
+                    }
                     Text(
-                        if (refreshInputConnected) "Автообновление списка: подключено"
-                        else "Автообновление списка: требуется спецвозможность Android",
+                        when (settings.refreshMode) {
+                            RefreshMode.OFF -> "Только распознавание: приложение не сообщает и не выполняет жесты."
+                            RefreshMode.ALERT_ONLY -> "Одно локальное уведомление на новое появление кнопки; жестов нет."
+                            RefreshMode.AUTO_REFRESH -> "Один проверяемый refresh-жест и не более одной повторной попытки."
+                        },
                     )
-                    if (!refreshInputConnected) OutlinedButton(onClick = {
-                        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                    }) { Text("Включить Rally Helper · Refresh") }
+                    if (settings.refreshMode == RefreshMode.AUTO_REFRESH) {
+                        Text(
+                            if (refreshInputConnected) "Спецвозможность подключена"
+                            else "Для AUTO нужна спецвозможность Rally Helper · Refresh",
+                            color = if (refreshInputConnected) Color(0xFF15803D) else Color(0xFFB45309),
+                        )
+                        if (!refreshInputConnected) OutlinedButton(onClick = {
+                            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                        }) { Text("Открыть спецвозможности Android") }
+                    }
+                }
+
+                RuntimeCard(status)
+                if (!status.running) Button(onClick = {
+                    if (Build.VERSION.SDK_INT >= 33 &&
+                        checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                    ) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    projectionConsent.launch(getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent())
+                }) { Text("Запустить ${settings.mode.displayName()}") }
+                else OutlinedButton(onClick = { startService(RadarForegroundService.stopIntent(this@MainActivity)) }) {
+                    Text("Остановить")
                 }
 
                 SettingsCard("Диагностика") {
@@ -256,6 +296,11 @@ class MainActivity : ComponentActivity() {
                         "Capture Lab: ${if (settings.captureLabArmed) "ARMED" else "OFF"}",
                         settings.captureLabArmed,
                     ) { armed -> scope.launch { settingsStore.setCaptureLabArmed(armed) } }
+                    SettingSwitch(
+                        "Evidence Collector: ${if (settings.evidenceCollectorEnabled) "ON" else "OFF"}",
+                        settings.evidenceCollectorEnabled,
+                    ) { enabled -> scope.launch { settingsStore.setEvidenceCollectorEnabled(enabled) } }
+                    Text("Evidence Collector сохраняет только новые переходы состояний; записи требуют ручного подтверждения.")
                     Text("Capture Lab: ${captureLabel.name}")
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = {
@@ -303,18 +348,68 @@ class MainActivity : ComponentActivity() {
                         Text("Обновить LIVE VALIDATION")
                     }
                     Text(
-                        "LIVE VALIDATION · empty ${validationSummary.labelCounts[CaptureLabLabel.EVENT_EMPTY] ?: 0}/1 · " +
-                            "target L5 ${validationSummary.labelCounts[CaptureLabLabel.TARGET_LEVEL_5_JOINABLE] ?: 0}/1 · " +
-                            "target L10 ${validationSummary.labelCounts[CaptureLabLabel.TARGET_LEVEL_10_JOINABLE] ?: 0}/1 · " +
-                            "non-target ${validationSummary.labelCounts[CaptureLabLabel.NON_TARGET] ?: 0}/1 · " +
-                            "full ${validationSummary.labelCounts[CaptureLabLabel.TARGET_FULL] ?: 0}/1 · " +
-                            "joined ${validationSummary.labelCounts[CaptureLabLabel.TARGET_ALREADY_JOINED] ?: 0}/1",
+                        "UNIQUE · scenarios ${validationSummary.uniqueScenarioCount} · rallies ${validationSummary.uniqueRealRallyCount} · " +
+                            "positive ${validationSummary.uniquePositiveTargetCount} · negative ${validationSummary.uniqueNegativeCount} · " +
+                            "multi ${validationSummary.uniqueMultiRallyCount} · holdout ${validationSummary.uniqueHoldoutScenarioCount}",
                     )
                     Text(
-                        "Shadow ${validationSummary.shadowWouldAttempts}/100 · travel " +
-                            "${validationSummary.distinctTravelTimes.size}/5 · holdout ${validationSummary.holdoutArchives}/100 · " +
-                            "squads ${validationSummary.squadCounts.values.sum()}",
+                        "Unverified ${validationSummary.unverifiedScenarioCount} · travel " +
+                            "${validationSummary.distinctTravelTimes.size}/5 · squads ${validationSummary.squadCounts.values.sum()}",
                     )
+                    Text("Guided Validation", style = MaterialTheme.typography.titleMedium)
+                    OutlinedButton(onClick = {
+                        guidedRevision++
+                        validationSummary = captureLabFiles.validationSummary()
+                    }) { Text("Обновить статусы") }
+                    val guidedStatuses = remember(guidedRevision) {
+                        GuidedValidationStore.CASES.associateWith(guidedValidation::status)
+                    }
+                    GuidedValidationStore.CASES.forEach { validationCase ->
+                        val caseStatus = guidedStatuses.getValue(validationCase)
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Text("${validationCase.id} · ${validationCase.title}")
+                                Text(caseStatus.name)
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    OutlinedButton(
+                                        enabled = status.running && caseStatus != GuidedValidationStatus.RUNNING,
+                                        onClick = {
+                                            startService(
+                                                RadarForegroundService.guidedValidationIntent(
+                                                    this@MainActivity,
+                                                    validationCase.id,
+                                                ),
+                                            )
+                                            guidedRevision++
+                                        },
+                                    ) { Text("START 45 SEC") }
+                                    if (caseStatus == GuidedValidationStatus.AWAITING_CONFIRMATION) {
+                                        Button(onClick = {
+                                            val confirmed = captureLabFiles.confirmLatestUnverified(
+                                                validationCase.captureLabel,
+                                                captureValueText.toIntOrNull(),
+                                            )
+                                            if (confirmed) {
+                                                guidedValidation.setStatus(validationCase, GuidedValidationStatus.COLLECTED)
+                                                validationSummary = captureLabFiles.validationSummary()
+                                            }
+                                            RadarRuntime.update {
+                                                it.copy(message = if (confirmed) "Ground truth confirmed" else "Sequence post-roll ещё не сохранена")
+                                            }
+                                            guidedRevision++
+                                        }) { Text("Подтвердить") }
+                                        OutlinedButton(onClick = {
+                                            guidedValidation.setStatus(validationCase, GuidedValidationStatus.NOT_COLLECTED)
+                                            guidedRevision++
+                                        }) { Text("Отклонить") }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     OutlinedButton(onClick = {
                         val bundle = captureLabFiles.createExportBundle()
                         if (bundle == null) {
@@ -334,17 +429,6 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                RuntimeCard(status)
-
-                if (!status.running) Button(onClick = {
-                    if (Build.VERSION.SDK_INT >= 33 &&
-                        checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-                    ) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    projectionConsent.launch(getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent())
-                }) { Text("Запустить ${settings.mode.displayName()}") }
-                else OutlinedButton(onClick = { startService(RadarForegroundService.stopIntent(this@MainActivity)) }) {
-                    Text("Остановить")
-                }
                 Text("При смене ориентации, viewport или неизвестном экране анализ прекращается безопасно.")
                 } else {
                     HistoryView(sessions, selectedSessionId, selectedEvents) { selectedSessionId = it }
@@ -367,7 +451,7 @@ private fun SettingsCard(title: String, content: @Composable () -> Unit) {
 @Composable
 private fun RuntimeCard(status: RadarStatus) = SettingsCard("Состояние") {
     Text(status.message)
-    Text("Режим: ${status.mode.displayName()} · экран: ${status.screen}")
+    Text("Режим: ${status.mode.displayName()} · refresh: ${status.refreshMode} · экран: ${status.screen}")
     Text("Кадры: ${status.framesAnalyzed} · очередь: ${status.framesDropped} · rate-limit: ${status.framesThrottled}")
     Text("Найдено: ${status.ralliesSeen} · eligible: ${status.eligible} · уведомлений: ${status.alertsEmitted}")
     Text("Non-target: ${status.nonTarget} · full: ${status.full} · unknown: ${status.unknown}")
@@ -376,8 +460,12 @@ private fun RuntimeCard(status: RadarStatus) = SettingsCard("Состояние"
     Text("Full before join: ${status.fullBeforeJoin} · no squad: ${status.noSquad} · too late: ${status.tooLate}")
     Text("Vision reject: ${status.visionRejects} · safety abort: ${status.safetyAborts}")
     Text(
-        "Refresh: запросов ${status.refreshRequests} · выполнено ${status.refreshSuccesses} · " +
-            "ошибок ${status.refreshFailures}",
+        "Refresh: найдено ${status.refreshDetected} · запросов ${status.refreshRequests} · " +
+            "принято ${status.refreshGestureAccepted} · завершено ${status.refreshGestureCompleted}",
+    )
+    Text(
+        "Refresh verify: success ${status.refreshVerifiedSuccesses} · fail ${status.refreshVerifiedFailures} · " +
+            "safety ${status.refreshSafetyRejects} · alerts ${status.refreshAlerts} · stuck ${status.refreshStuck}",
     )
     Text(
         "Latency avg/p50/p95: ${status.averageLatencyMs ?: "—"}/" +

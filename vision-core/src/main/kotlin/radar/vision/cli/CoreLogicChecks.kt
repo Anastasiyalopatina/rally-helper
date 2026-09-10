@@ -16,7 +16,14 @@ import radar.vision.RallyConfidences
 import radar.vision.RallyId
 import radar.vision.RallyTracker
 import radar.vision.RefreshCoordinator
+import radar.vision.RefreshControlCandidate
+import radar.vision.RefreshMode
 import radar.vision.Recognition
+import radar.vision.GesturePurpose
+import radar.vision.GestureRejectReason
+import radar.vision.GestureRequest
+import radar.vision.GestureSafetyGate
+import radar.vision.NormalizedPoint
 import radar.vision.OneTapRequest
 import radar.vision.OneTapRequestGuard
 import radar.vision.ScoredCardCandidate
@@ -171,32 +178,97 @@ fun main() {
     check(distinctIdentity.id != identityA.id) { "Different title+coordinate identity must create a different rally" }
 
     val refreshBounds = NormalizedRect(0.31, 0.93, 0.69, 0.98)
-    fun refreshFrame(id: Long, visible: Boolean) = frame(id, emptyList()).copy(
-        refreshButton = if (visible) Recognition(refreshBounds, 1f, accepted = true)
+    fun refreshFrame(id: Long, visible: Boolean, stableFrames: Int = 2) = frame(id, emptyList()).copy(
+        refreshButton = if (visible) Recognition(
+            RefreshControlCandidate(refreshBounds, .98f, .98f, null, stableFrames, .94f),
+            .94f,
+            accepted = true,
+        )
         else Recognition.unknown("not visible"),
     )
-    val refresh = RefreshCoordinator(minimumIntervalMs = 750, retryAfterMs = 2_000)
-    check(refresh.onFrame(refreshFrame(50, true))?.frameId == 50L)
-    check(refresh.onFrame(refreshFrame(51, true)) == null) { "A visible refresh button must not be tapped every frame" }
-    check(refresh.onFrame(refreshFrame(52, false)) == null)
-    check(refresh.onFrame(refreshFrame(53, false)) == null)
-    check(refresh.onFrame(refreshFrame(54, true))?.frameId == 54L) { "Two absent frames must rearm refresh" }
-    check(refresh.onFrame(refreshFrame(55, true)) == null)
-    check(refresh.onFrame(refreshFrame(57, true))?.frameId == 57L) { "A stuck button must retry after timeout" }
-
+    val expectedPackage = "local.test.target"
+    val refresh = RefreshCoordinator()
+    check(refresh.onFrame(refreshFrame(50, true), RefreshMode.OFF, expectedPackage).request == null)
+    check(refresh.metrics().requests == 0L) { "OFF must be read-only" }
+    val alert = refresh.onFrame(refreshFrame(51, true), RefreshMode.ALERT_ONLY, expectedPackage)
+    check(alert.shouldAlert && alert.request == null)
+    check(!refresh.onFrame(refreshFrame(52, true), RefreshMode.ALERT_ONLY, expectedPackage).shouldAlert) {
+        "ALERT_ONLY must signal once per appearance"
+    }
     refresh.reset()
-    check(refresh.onFrame(refreshFrame(60, true).copy(observedAtMonotonicMs = 3_000))?.frameId == 60L)
+    val firstRefresh = refresh.onFrame(refreshFrame(60, true), RefreshMode.AUTO_REFRESH, expectedPackage).request
+        ?: error("AUTO must request a stable, high-confidence refresh")
+    refresh.onGestureAccepted(firstRefresh.requestId)
+    refresh.onGestureCompleted(firstRefresh.requestId, 60_050, completed = true)
     check(
         refresh.onFrame(
-            refreshFrame(61, true).copy(
-                screen = ScreenState.UNKNOWN,
-                observedAtMonotonicMs = 3_100,
-            ),
-        ) == null,
+            refreshFrame(61, true).copy(observedAtMonotonicMs = 60_500),
+            RefreshMode.AUTO_REFRESH,
+            expectedPackage,
+        ).request == null,
     )
-    check(refresh.onFrame(refreshFrame(62, true).copy(observedAtMonotonicMs = 3_200)) == null) {
-        "A single uncertain screen frame must not rearm the same visible refresh button"
+    val retry = refresh.onFrame(
+        refreshFrame(62, true).copy(observedAtMonotonicMs = 61_550),
+        RefreshMode.AUTO_REFRESH,
+        expectedPackage,
+    ).request ?: error("A persistent control must receive exactly one bounded retry")
+    refresh.onGestureAccepted(retry.requestId)
+    refresh.onGestureCompleted(retry.requestId, 61_600, completed = true)
+    val stuck = refresh.onFrame(
+        refreshFrame(63, true).copy(observedAtMonotonicMs = 63_100),
+        RefreshMode.AUTO_REFRESH,
+        expectedPackage,
+    )
+    check(stuck.autoRefreshPaused && stuck.reason == "REFRESH_STUCK")
+    check(refresh.metrics().requests == 2L && refresh.metrics().stuck == 1L)
+
+    refresh.reset()
+    val verified = refresh.onFrame(refreshFrame(70, true), RefreshMode.AUTO_REFRESH, expectedPackage).request!!
+    refresh.onGestureAccepted(verified.requestId)
+    refresh.onGestureCompleted(verified.requestId, 70_050, completed = true)
+    check(
+        refresh.onFrame(refreshFrame(71, false), RefreshMode.AUTO_REFRESH, expectedPackage).verifiedSuccess,
+    ) { "Gesture completion is not success; control disappearance verifies success" }
+    refresh.onFrame(refreshFrame(72, false), RefreshMode.AUTO_REFRESH, expectedPackage)
+    check(refresh.onFrame(refreshFrame(73, true), RefreshMode.AUTO_REFRESH, expectedPackage).request != null) {
+        "Two absent frames must rearm a new appearance"
     }
+
+    val gesture = GestureRequest(
+        requestId = "g1",
+        purpose = GesturePurpose.REFRESH,
+        point = NormalizedPoint(.5, .95),
+        sourceFrameId = 1,
+        sourceObservedAtMonotonicMs = 1_000,
+        expiresAtMonotonicMs = 1_750,
+        expectedPackage = expectedPackage,
+        expectedScreen = ScreenState.EVENT_LIST,
+    )
+    fun gate(
+        request: GestureRequest = gesture,
+        verifiedPackage: String = expectedPackage,
+        foregroundPackage: String? = expectedPackage,
+        foregroundAt: Long? = 1_500,
+        now: Long = 1_600,
+        connected: Boolean = true,
+        cancelled: Boolean = false,
+        inFlight: Boolean = false,
+    ) = GestureSafetyGate.evaluate(
+        request, verifiedPackage, foregroundPackage, foregroundAt, now, connected, cancelled, inFlight,
+    )
+    check(gate().allowed)
+    check(gate(connected = false).reason == GestureRejectReason.SERVICE_DISCONNECTED)
+    check(gate(request = gesture.copy(purpose = GesturePurpose.UNSUPPORTED)).reason == GestureRejectReason.WRONG_PURPOSE)
+    check(gate(now = 1_751).reason == GestureRejectReason.EXPIRED)
+    check(gate(verifiedPackage = "").reason == GestureRejectReason.UNVERIFIED_EXPECTED_PACKAGE)
+    check(gate(foregroundPackage = "wrong.package").reason == GestureRejectReason.WRONG_FOREGROUND_PACKAGE)
+    check(
+        gate(request = gesture.copy(expiresAtMonotonicMs = 40_000), foregroundAt = 0, now = 30_001)
+            .reason == GestureRejectReason.STALE_FOREGROUND_EVENT,
+    )
+    check(gate(request = gesture.copy(expectedScreen = ScreenState.UNKNOWN)).reason == GestureRejectReason.WRONG_SOURCE_SCREEN)
+    check(gate(cancelled = true).reason == GestureRejectReason.CANCELLED)
+    check(gate(inFlight = true).reason == GestureRejectReason.GESTURE_IN_FLIGHT)
 
     val machine = AutomationStateMachine()
     check(machine.dispatch(AutomationEvent.DelayElapsed(99), 0) is TransitionResult.Rejected)

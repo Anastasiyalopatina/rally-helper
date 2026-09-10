@@ -5,16 +5,16 @@ Date: 2026-09-10.
 | Gate | Status |
 |---|---|
 | Independent holdout | NOT_RUN |
-| Functional device matrix | INCOMPLETE (1/13) |
-| 100 eligible Shadow decisions | NOT_RUN (0/100) |
+| Critical real cases R1–R8 | INCOMPLETE |
+| Confirmed deterministic replay | WAITING FOR CONFIRMED PRIVATE SEQUENCES |
 | Session-reset policy regression | PASS |
 | Squad-state evidence | NOT_RUN |
 | Travel-time evidence | NOT_RUN |
-| Already-joined evidence | NOT_RUN |
-| Final 60-minute endurance | NOT_RUN |
+| No-plus safety evidence | NOT_RUN |
+| Final-release endurance | DEFERRED; not a prerequisite for ONE_TAP_A |
 | ONE_TAP gesture implementation | NOT_PRESENT |
 | ONE_TAP live test | BLOCKED |
 
-No accessibility service or gesture dispatcher is included. The live event available during Phase C2 contained no rallies, so it could not supply the evidence required by the gate. ONE_TAP remains deliberately locked until all preceding evidence is recorded and reviewed.
+A narrowly scoped Accessibility service exists only for guarded refresh. It cannot retrieve window content and it has no join/send API. ONE_TAP join/send remains deliberately locked until R1–R8 have confirmed real sequences, replay passes, and independent holdout has zero false-actionable cases. No-plus is sufficient for the safety invariant; returning-squad support and a Shadow-decision quota are not prerequisites for ONE_TAP_A.
 
-NEXT GATE: **BLOCKED**.
+NEXT GATE: **WAITING FOR ORDINARY-SESSION EVIDENCE**.

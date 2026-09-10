@@ -66,3 +66,21 @@ On a physical device, the application processed 1,376 frames during a 482-second
 Only scenario H, an empty event list, was available during this validation window. It was captured and labelled locally; expected and actual behavior matched: event-list screen, no eligible target, and no alert. Scenarios A–G and I–M remain `NOT_RUN` because the live event supplied no rallies. Matrix completion is therefore 1/13, and the gate remains open.
 
 No independent rally holdout, eligible Shadow-decision set, squad-state set, travel-time set, or already-joined sequence could be collected from the empty live event. The 60-minute final-release test and lifecycle matrix were not started because their prerequisite functional gates are still open.
+
+## Phase C4 bounded validation
+
+The Phase C4 candidate was installed cleanly and run with refresh set to `OFF`. A bounded smoke/performance session included a five-minute measurement window; collection and UI inspection brought the total session to 465 seconds. The application analyzed 892 frames, dropped 0 frames from the latest-frame queue, and reported avg/p50/p95 detector latency of 65/66/81 ms. The process and foreground service remained alive, memory samples fluctuated within a bounded range and returned near their earlier level, and the inspected logcat window contained no application crash or ANR.
+
+| Check | Result |
+|---|---|
+| Refresh `OFF` on device | PASS: 0 requests, 0 accepted/completed gestures |
+| Refresh detector on supplied real control image | PASS: event list and control detected; AUTO still requires a second stable frame |
+| `ALERT_ONLY` no-gesture invariant | PASS in deterministic core test; live control NOT_OBSERVED in the bounded window |
+| Guarded `AUTO_REFRESH` | PASS in deterministic package/screen/expiry tests; live control NOT_OBSERVED in the bounded window |
+| Persistent control maximum | PASS: exactly two requests maximum in deterministic sequence |
+| Gesture callback without UI change | PASS: not counted as success; bounded retry then `REFRESH_STUCK` |
+| Guided R1–R8 / M1 / S1–S3 / T1–T5 | UI and 45-second termination compiled; rare live cases not collected in this window |
+
+The connected device identifier, verified target package, raw frames and private Capture Lab archives were not written to this repository. The target package is supplied to the build through ignored local configuration. Current readiness is maintained in `CURRENT_STATE.md`.
+
+Twenty-eight legacy private Capture Lab ZIPs were passed through the new runner. They were all reported as `NOT_OBSERVED` because they predate separate confirmed ground truth. This validates fail-closed replay classification but supplies no detector-accuracy evidence. The temporary desktop copy was removed immediately after the check.

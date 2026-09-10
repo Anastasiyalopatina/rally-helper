@@ -15,6 +15,10 @@ sourceSets {
     }
 }
 
+dependencies {
+    add("cliImplementation", "org.json:json:20240303")
+}
+
 fun registerDatasetVerification(name: String, mode: String, descriptionText: String) = tasks.register<JavaExec>(name) {
     group = "verification"
     description = descriptionText
@@ -61,6 +65,34 @@ tasks.register<JavaExec>("inspectFrame") {
     args(
         framePath.orElse("").get(),
         rootProject.layout.projectDirectory.file("app/src/main/assets/detector_templates.bin").asFile.absolutePath,
+    )
+}
+
+tasks.register<JavaExec>("replayCapturedScenarios") {
+    group = "verification"
+    description = "Replays private Capture Lab scenario ZIPs with manifest time and separate ground truth."
+    dependsOn("cliClasses")
+    classpath = sourceSets["cli"].runtimeClasspath
+    mainClass.set("radar.vision.cli.CaptureLabReplayRunnerKt")
+    val captureBundle = providers.gradleProperty("captureBundle")
+    doFirst { require(captureBundle.isPresent) { "-PcaptureBundle=/path/to/export-or-scenario.zip is required" } }
+    args(
+        captureBundle.orElse("").get(),
+        rootProject.layout.projectDirectory.file("app/src/main/assets/detector_templates.bin").asFile.absolutePath,
+        layout.buildDirectory.dir("reports/replay").get().asFile.absolutePath,
+    )
+}
+
+tasks.register<JavaExec>("verifyReplayInfrastructure") {
+    group = "verification"
+    description = "Exercises the deterministic replay runner with generated neutral frames."
+    dependsOn("cliClasses")
+    classpath = sourceSets["cli"].runtimeClasspath
+    mainClass.set("radar.vision.cli.CaptureLabReplaySelfCheckKt")
+    args(
+        layout.buildDirectory.dir("tmp/replay-self-check").get().asFile.absolutePath,
+        rootProject.layout.projectDirectory.file("app/src/main/assets/detector_templates.bin").asFile.absolutePath,
+        layout.buildDirectory.dir("reports/replay-self-check").get().asFile.absolutePath,
     )
 }
 

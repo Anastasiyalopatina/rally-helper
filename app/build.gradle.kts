@@ -1,9 +1,18 @@
 import java.util.zip.ZipFile
+import java.util.Properties
 
 val buildGitSha = providers.exec {
     commandLine("git", "rev-parse", "HEAD")
     isIgnoreExitValue = true
 }.standardOutput.asText.map { it.trim().ifEmpty { "unknown" } }
+val localBuildProperties = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.isFile }?.inputStream()?.use { load(it) }
+}
+val verifiedTargetPackage = (
+    providers.environmentVariable("RALLY_HELPER_TARGET_PACKAGE").orNull
+        ?: localBuildProperties.getProperty("verifiedTargetPackage")
+        ?: ""
+    ).replace("\\", "\\\\").replace("\"", "\\\"")
 
 plugins {
     id("com.android.application")
@@ -23,6 +32,7 @@ android {
         versionCode = 1
         versionName = "0.2.0-radar"
         buildConfigField("String", "GIT_SHA", "\"${buildGitSha.get()}\"")
+        buildConfigField("String", "VERIFIED_TARGET_PACKAGE", "\"$verifiedTargetPackage\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

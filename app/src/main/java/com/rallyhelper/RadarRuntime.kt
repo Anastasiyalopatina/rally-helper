@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import radar.vision.RuntimeMode
 import radar.vision.ScreenState
+import radar.vision.RefreshMode
 
 enum class RuntimeLifecycle { STOPPED, RUNNING, AUTOMATION_PAUSED, NEEDS_CALIBRATION }
 
@@ -11,6 +12,7 @@ data class RadarStatus(
     val running: Boolean = false,
     val lifecycle: RuntimeLifecycle = RuntimeLifecycle.STOPPED,
     val mode: RuntimeMode = RuntimeMode.RADAR,
+    val refreshMode: RefreshMode = RefreshMode.OFF,
     val screen: ScreenState = ScreenState.UNKNOWN,
     val framesAnalyzed: Long = 0,
     val framesDropped: Long = 0,
@@ -37,9 +39,15 @@ data class RadarStatus(
     val visionRejects: Long = 0,
     val safetyAborts: Long = 0,
     val safetyRejects: Long = 0,
+    val refreshDetected: Long = 0,
     val refreshRequests: Long = 0,
-    val refreshSuccesses: Long = 0,
-    val refreshFailures: Long = 0,
+    val refreshGestureAccepted: Long = 0,
+    val refreshGestureCompleted: Long = 0,
+    val refreshVerifiedSuccesses: Long = 0,
+    val refreshVerifiedFailures: Long = 0,
+    val refreshSafetyRejects: Long = 0,
+    val refreshAlerts: Long = 0,
+    val refreshStuck: Long = 0,
     val averageLatencyMs: Long? = null,
     val p50LatencyMs: Long? = null,
     val p95LatencyMs: Long? = null,
@@ -54,11 +62,16 @@ object RadarRuntime {
         mutable.value = block(mutable.value)
     }
 
-    fun resetForSession(mode: RuntimeMode, startedAtEpochMs: Long = System.currentTimeMillis()) {
+    fun resetForSession(
+        mode: RuntimeMode,
+        refreshMode: RefreshMode = RefreshMode.OFF,
+        startedAtEpochMs: Long = System.currentTimeMillis(),
+    ) {
         mutable.value = RadarStatus(
             running = true,
             lifecycle = RuntimeLifecycle.RUNNING,
             mode = mode,
+            refreshMode = refreshMode,
             sessionStartedAtEpochMs = startedAtEpochMs,
             message = "Запуск локального анализа…",
         )
