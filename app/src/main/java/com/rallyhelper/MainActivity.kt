@@ -35,6 +35,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.rallyhelper.capture.RadarForegroundService
+import com.rallyhelper.capture.LocalAlertFeedback
 import com.rallyhelper.data.DebugCaptureMode
 import com.rallyhelper.data.RadarSettings
 import com.rallyhelper.data.RadarSettingsStore
@@ -63,6 +65,7 @@ import com.rallyhelper.debug.GuidedValidationStatus
 import com.rallyhelper.debug.GuidedValidationStore
 import com.rallyhelper.input.GestureActionController
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import radar.vision.RuntimeMode
 import radar.vision.RefreshMode
 import kotlin.math.roundToInt
@@ -78,9 +81,19 @@ class MainActivity : ComponentActivity() {
     private fun RadarScreen() {
         val status by RadarRuntime.status.collectAsStateWithLifecycle()
         val refreshInputConnected by GestureActionController.connected.collectAsStateWithLifecycle()
+        var polledActionsConnected by remember { mutableStateOf(GestureActionController.isConnected()) }
+        LaunchedEffect(Unit) {
+            while (true) {
+                polledActionsConnected = GestureActionController.isConnected()
+                delay(500)
+            }
+        }
+        val actionsConnected = refreshInputConnected || polledActionsConnected
         val settingsStore = remember { RadarSettingsStore(this@MainActivity) }
         val settings by settingsStore.settings.collectAsStateWithLifecycle(initialValue = RadarSettings())
         val scope = rememberCoroutineScope()
+        val alertFeedback = remember { LocalAlertFeedback(this@MainActivity) }
+        DisposableEffect(alertFeedback) { onDispose { alertFeedback.close() } }
         var showHistory by remember { mutableStateOf(false) }
         val historyRepository = remember { RadarRepository.create(this@MainActivity) }
         DisposableEffect(historyRepository) { onDispose { historyRepository.close() } }
@@ -98,8 +111,12 @@ class MainActivity : ComponentActivity() {
         var captureSplit by remember { mutableStateOf(CaptureDatasetSplit.TUNING) }
         var validationSummary by remember { mutableStateOf(captureLabFiles.validationSummary()) }
         var pendingExportPath by remember { mutableStateOf<String?>(null) }
+        var signalChecked by remember { mutableStateOf(false) }
+        var permissionRevision by remember { mutableStateOf(0) }
         val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
-        val overlayPermission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {}
+        val overlayPermission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            permissionRevision++
+        }
         val captureExport = rememberLauncherForActivityResult(
             ActivityResultContracts.CreateDocument("application/zip"),
         ) { destination ->
@@ -148,7 +165,6 @@ class MainActivity : ComponentActivity() {
                         ModeButton("ONE_TAP", settings.mode == RuntimeMode.ONE_TAP) {
                             scope.launch {
                                 settingsStore.setMode(RuntimeMode.ONE_TAP)
-                                settingsStore.setOverlayEnabled(true)
                             }
                             if (!android.provider.Settings.canDrawOverlays(this@MainActivity)) {
                                 RadarRuntime.update {
@@ -173,16 +189,38 @@ class MainActivity : ComponentActivity() {
                             color = Color(0xFF15803D),
                         )
                         Text(
-                            if (refreshInputConnected) "Rally Helper · Actions включён"
+                            if (actionsConnected) "Rally Helper · Actions включён"
                             else "Для кнопки ВСТУПИТЬ включите Rally Helper · Actions",
-                            color = if (refreshInputConnected) Color(0xFF15803D) else Color(0xFFB45309),
+                            color = if (actionsConnected) Color(0xFF15803D) else Color(0xFFB45309),
                         )
-                        if (!refreshInputConnected) OutlinedButton(onClick = {
+                        if (!actionsConnected) OutlinedButton(onClick = {
                             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                         }) { Text("Разрешить действия") }
                     } else if (settings.mode == RuntimeMode.AUTO) {
                         Text("AUTO пока заблокирован.", color = Color(0xFFB45309))
                     }
+                }
+
+                if (settings.mode == RuntimeMode.ONE_TAP) SettingsCard("Готовность ONE TAP") {
+                    @Suppress("UNUSED_VARIABLE") val refreshPermissionState = permissionRevision
+                    val overlayReady = android.provider.Settings.canDrawOverlays(this@MainActivity)
+                    Text("Overlay permission      ${if (overlayReady) "✅" else "❌"}")
+                    Text("Rally Helper Actions   ${if (actionsConnected) "✅" else "❌"}")
+                    Text("Target package          ${if (BuildConfig.VERIFIED_TARGET_PACKAGE.isNotBlank()) "✅" else "❌"}")
+                    Text("MediaProjection         ${if (status.running) "✅" else "❌ после запуска"}")
+                    Text("Выбранные уровни        ${if (settings.selectedLevels.isNotEmpty()) "✅" else "❌"}")
+                    Text("Сигнал                  ${if (signalChecked) "✅ проверен" else "проверить"}")
+                    if (!overlayReady) OutlinedButton(onClick = {
+                        overlayPermission.launch(
+                            Intent(
+                                android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                Uri.parse("package:$packageName"),
+                            ),
+                        )
+                    }) { Text("Разрешить overlay") }
+                    if (!actionsConnected) OutlinedButton(onClick = {
+                        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    }) { Text("Включить Rally Helper Actions") }
                 }
 
                 SettingsCard("Основные настройки") {
@@ -226,12 +264,19 @@ class MainActivity : ComponentActivity() {
                     SettingSwitch("Вибрация", settings.vibrationEnabled) {
                         scope.launch { settingsStore.setVibrationEnabled(it) }
                     }
+                    OutlinedButton(onClick = {
+                        alertFeedback.emit(settings.soundEnabled, settings.vibrationEnabled)
+                        signalChecked = true
+                        RadarRuntime.update { it.copy(message = "Проверочный сигнал отправлен") }
+                    }) { Text("Проверить звук и вибрацию") }
                     if (settings.mode == RuntimeMode.ONE_TAP) {
                         Text("Overlay с кнопкой ВСТУПИТЬ включается автоматически.")
                     } else SettingSwitch("Показывать overlay", settings.overlayEnabled) {
                         scope.launch { settingsStore.setOverlayEnabled(it) }
                     }
-                    if (settings.overlayEnabled && !android.provider.Settings.canDrawOverlays(this@MainActivity)) {
+                    if ((settings.overlayEnabled || settings.mode == RuntimeMode.ONE_TAP) &&
+                        !android.provider.Settings.canDrawOverlays(this@MainActivity)
+                    ) {
                         OutlinedButton(onClick = {
                             overlayPermission.launch(
                                 Intent(
@@ -264,11 +309,11 @@ class MainActivity : ComponentActivity() {
                     )
                     if (settings.refreshMode == RefreshMode.AUTO_REFRESH) {
                         Text(
-                            if (refreshInputConnected) "Спецвозможность подключена"
+                            if (actionsConnected) "Спецвозможность подключена"
                             else "Для AUTO нужна спецвозможность Rally Helper · Actions",
-                            color = if (refreshInputConnected) Color(0xFF15803D) else Color(0xFFB45309),
+                            color = if (actionsConnected) Color(0xFF15803D) else Color(0xFFB45309),
                         )
-                        if (!refreshInputConnected) OutlinedButton(onClick = {
+                        if (!actionsConnected) OutlinedButton(onClick = {
                             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                         }) { Text("Открыть спецвозможности Android") }
                     }
@@ -276,10 +321,16 @@ class MainActivity : ComponentActivity() {
 
                 RuntimeCard(status)
                 if (!status.running) Button(onClick = {
-                    if (settings.mode == RuntimeMode.ONE_TAP &&
+                    if (settings.mode == RuntimeMode.ONE_TAP && BuildConfig.VERIFIED_TARGET_PACKAGE.isBlank()) {
+                        RadarRuntime.update { it.copy(message = "ONE TAP заблокирован: target package не настроен") }
+                    } else if (settings.mode == RuntimeMode.ONE_TAP && settings.selectedLevels.isEmpty()) {
+                        RadarRuntime.update { it.copy(message = "ONE TAP заблокирован: выберите хотя бы один уровень") }
+                    } else if (settings.mode == RuntimeMode.ONE_TAP && !actionsConnected) {
+                        RadarRuntime.update { it.copy(message = "ONE TAP заблокирован: включите Rally Helper Actions") }
+                        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    } else if (settings.mode == RuntimeMode.ONE_TAP &&
                         !android.provider.Settings.canDrawOverlays(this@MainActivity)
                     ) {
-                        scope.launch { settingsStore.setOverlayEnabled(true) }
                         RadarRuntime.update {
                             it.copy(message = "Для кнопки ВСТУПИТЬ разрешите отображение поверх игры")
                         }
@@ -497,7 +548,11 @@ private fun RuntimeCard(status: RadarStatus) = SettingsCard("Состояние"
     Text("Найдено: ${status.ralliesSeen} · eligible: ${status.eligible} · уведомлений: ${status.alertsEmitted}")
     Text("Non-target: ${status.nonTarget} · full: ${status.full} · unknown: ${status.unknown}")
     Text("Shadow would-attempt: ${status.shadowWouldAttempts} · пропущено policy: ${status.policySkipped} · safety rejects: ${status.safetyRejects}")
-    Text("Реальные попытки: ${status.actualAttempts} · успешно: ${status.actualSuccesses} · неуспешно: ${status.actualFailures}")
+    Text(
+        "Открытия ONE TAP: ${status.oneTapOpenAttempts} · открыто: ${status.oneTapOpenSuccesses} · " +
+            "ошибок: ${status.oneTapOpenFailures}",
+    )
+    Text("Вступления: ${status.joinAttempts} · успешно: ${status.joinSuccesses} · ошибок: ${status.joinFailures}")
     Text("Full before join: ${status.fullBeforeJoin} · no squad: ${status.noSquad} · too late: ${status.tooLate}")
     Text("Vision reject: ${status.visionRejects} · safety abort: ${status.safetyAborts}")
     Text(
@@ -578,7 +633,7 @@ private fun HistoryView(
                                 "would-attempt ${session.shadowWouldAttempts}"
                         } else {
                             "${session.mode} · ${session.framesAnalyzed} кадров · eligible ${session.eligible} · " +
-                                "real attempts ${session.actualAttempts} · success ${session.actualSuccesses}"
+                                "open attempts ${session.oneTapOpenAttempts} · opened ${session.oneTapOpenSuccesses}"
                         },
                 )
             }

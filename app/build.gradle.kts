@@ -32,8 +32,23 @@ android {
         versionCode = 1
         versionName = "0.2.0-radar"
         buildConfigField("String", "GIT_SHA", "\"${buildGitSha.get()}\"")
-        buildConfigField("String", "VERIFIED_TARGET_PACKAGE", "\"$verifiedTargetPackage\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    flavorDimensions += "target"
+    productFlavors {
+        create("production") {
+            dimension = "target"
+            buildConfigField("String", "VERIFIED_TARGET_PACKAGE", "\"$verifiedTargetPackage\"")
+            buildConfigField("boolean", "ONE_TAP_INTEGRATION", "false")
+        }
+        create("oneTapIntegration") {
+            dimension = "target"
+            applicationIdSuffix = ".integration"
+            versionNameSuffix = "-integration"
+            buildConfigField("String", "VERIFIED_TARGET_PACKAGE", "\"com.rallyhelper.testtarget\"")
+            buildConfigField("boolean", "ONE_TAP_INTEGRATION", "true")
+        }
     }
 
     buildFeatures {
@@ -55,9 +70,9 @@ android {
 tasks.register("verifyNoRawCalibrationAssets") {
     group = "verification"
     description = "Fails if an APK contains raw calibration screenshots."
-    dependsOn("assembleDebug")
+    dependsOn("assembleProductionDebug")
     doLast {
-        val apk = layout.buildDirectory.file("outputs/apk/debug/app-debug.apk").get().asFile
+        val apk = layout.buildDirectory.file("outputs/apk/production/debug/app-production-debug.apk").get().asFile
         require(apk.isFile) { "Debug APK was not produced" }
         val forbidden = ZipFile(apk).use { zip ->
             zip.entries().asSequence().map { it.name }.filter { name ->
@@ -66,6 +81,21 @@ tasks.register("verifyNoRawCalibrationAssets") {
         }
         require(forbidden.isEmpty()) { "Raw image assets found in APK: $forbidden" }
         println("PASS: APK contains no raw calibration screenshots")
+    }
+}
+
+tasks.register("verifyProductionIsolation") {
+    group = "verification"
+    description = "Proves the production APK excludes deterministic integration fixtures."
+    dependsOn("assembleProductionDebug")
+    doLast {
+        val apk = layout.buildDirectory.file("outputs/apk/production/debug/app-production-debug.apk").get().asFile
+        require(apk.isFile) { "Production debug APK was not produced" }
+        val bytes = apk.readBytes().toString(Charsets.ISO_8859_1)
+        val forbidden = listOf("com.rallyhelper.testtarget", "TEST_EVENT", "FakeFrameAnalysis", "receivedJoinTapCount")
+            .filter(bytes::contains)
+        require(forbidden.isEmpty()) { "Integration markers found in production APK: $forbidden" }
+        println("PASS: production APK excludes integration fixtures")
     }
 }
 

@@ -12,6 +12,8 @@ data class GestureRequest(
     val expiresAtMonotonicMs: Long,
     val expectedPackage: String,
     val expectedScreen: ScreenState,
+    val expectedForegroundGeneration: Long = 0,
+    val projectionSessionGeneration: Long = 0,
 )
 
 enum class GestureRejectReason {
@@ -22,7 +24,9 @@ enum class GestureRejectReason {
     EXPIRED,
     UNVERIFIED_EXPECTED_PACKAGE,
     WRONG_FOREGROUND_PACKAGE,
+    FOREGROUND_CHANGED_AFTER_VALIDATION,
     STALE_FOREGROUND_EVENT,
+    PROJECTION_SESSION_CHANGED,
     WRONG_SOURCE_SCREEN,
     CANCELLED,
     GESTURE_IN_FLIGHT,
@@ -44,6 +48,8 @@ object GestureSafetyGate {
         serviceConnected: Boolean,
         cancelled: Boolean,
         gestureInFlight: Boolean,
+        currentForegroundGeneration: Long = request.expectedForegroundGeneration,
+        currentProjectionSessionGeneration: Long = request.projectionSessionGeneration,
         maxForegroundAgeMs: Long = 6 * 60 * 60 * 1_000,
     ): GestureGateDecision {
         val reason = when {
@@ -58,9 +64,13 @@ object GestureSafetyGate {
             verifiedPackage.isBlank() || request.expectedPackage != verifiedPackage ->
                 GestureRejectReason.UNVERIFIED_EXPECTED_PACKAGE
             lastForegroundPackage != request.expectedPackage -> GestureRejectReason.WRONG_FOREGROUND_PACKAGE
+            currentForegroundGeneration != request.expectedForegroundGeneration ->
+                GestureRejectReason.FOREGROUND_CHANGED_AFTER_VALIDATION
             lastForegroundEventMonotonicMs == null ||
                 nowMonotonicMs - lastForegroundEventMonotonicMs !in 0..maxForegroundAgeMs ->
                 GestureRejectReason.STALE_FOREGROUND_EVENT
+            currentProjectionSessionGeneration != request.projectionSessionGeneration ->
+                GestureRejectReason.PROJECTION_SESSION_CHANGED
             request.expectedScreen != ScreenState.EVENT_LIST -> GestureRejectReason.WRONG_SOURCE_SCREEN
             cancelled -> GestureRejectReason.CANCELLED
             gestureInFlight -> GestureRejectReason.GESTURE_IN_FLIGHT

@@ -1,6 +1,6 @@
 # Device test status
 
-> Historical pre-D0 device report. Current D0 device results are recorded only after installing the final SHA.
+> Sections through Phase C4 are historical results. The current capability statement and Phase D1 result are below and in `CURRENT_STATE.md`.
 
 Date: 2026-09-10.
 
@@ -85,3 +85,26 @@ The Phase C4 candidate was installed cleanly and run with refresh set to `OFF`. 
 The connected device identifier, verified target package, raw frames and private Capture Lab archives were not written to this repository. The target package is supplied to the build through ignored local configuration. Current readiness is maintained in `CURRENT_STATE.md`.
 
 Twenty-eight legacy private Capture Lab ZIPs were passed through the new runner. They were all reported as `NOT_OBSERVED` because they predate separate confirmed ground truth. This validates fail-closed replay classification but supplies no detector-accuracy evidence. The temporary desktop copy was removed immediately after the check.
+
+## Phase D1 deterministic device validation
+
+The separate debug-only target and `oneTapIntegrationDebug` flavor were installed on a physical Android device. The target continuously changes a harmless tick marker so MediaProjection supplies fresh frames, exposes a deterministic `JOIN PLUS` region, counts received taps and optionally transitions to `TEST_MARCH`.
+
+| Case | Result | Received taps |
+|---|---|---:|
+| E1 correct target and confirmed result screen | PASS | 1 |
+| E2 repeated overlay click | PASS | 1 |
+| E3 foreground leaves target before dispatch | PASS | 0 |
+| E4 target → other window → target before dispatch | PASS | 0 |
+| E5 projection/session process stopped before dispatch | PASS | 0 |
+| E6 geometry invalidation before dispatch | PASS | 0 |
+| E7 expired request | PASS | 0 |
+| E8 wrong verified target package | PASS | 0 |
+| E9 Android gesture completes but result screen does not appear | PASS (correctly reported failure) | 1 |
+| E10 Actions service unavailable | PASS (permission action shown) | 0 |
+
+This matrix proves the integration plumbing: overlay → fresh-frame state machine → package/generation/session guards → Android Accessibility gesture → physical target tap → result verification. It does **not** prove recognition accuracy in the real target application; that remains a separate live/replay evidence track.
+
+The explicit signal button invoked the same audio/vibration path as a real alert. System logs confirmed both requests, but the connected phone's current notification profile muted the audio stream and rejected vibration. Application pipeline: PASS. Noticeable device output under the current profile: FAIL; change the phone's notification volume/vibration setting before supervised use.
+
+The real-target preflight and final installed production SHA are filled after the final production build. No real opportunity was required or observed during this bounded engineering test.

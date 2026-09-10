@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "RallyHelper"
-include(":app", ":vision-core")
+include(":app", ":vision-core", ":test-target")

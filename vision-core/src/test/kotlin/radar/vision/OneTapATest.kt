@@ -136,6 +136,53 @@ class OneTapATest {
         assertIs<OneTapFlowUpdate.Ignored>(coordinator.onFreshFrame(frame(), tracking(track()), policy, "target.package"))
     }
 
+    @Test fun `visibility loss cancels pending fresh frame`() {
+        val coordinator = OneTapFlowCoordinator()
+        assertTrue(coordinator.begin(request))
+        assertTrue(coordinator.cancel())
+        assertIs<OneTapFlowUpdate.Ignored>(coordinator.onFreshFrame(frame(), tracking(track()), policy, "target.package"))
+    }
+
+    @Test fun `geometry loss cancels pending dispatch`() {
+        val coordinator = dispatchedCoordinator()
+        assertTrue(coordinator.cancel())
+        assertIs<OneTapFlowUpdate.Ignored>(coordinator.onGestureCompleted("join-old-2", true, 2_100))
+    }
+
+    @Test fun `foreground generation change after validation rejects gesture`() {
+        val gesture = validGesture().copy(expectedForegroundGeneration = 7)
+        val decision = GestureSafetyGate.evaluate(
+            gesture, "target.package", "target.package", 2_100, 2_200, true, false, false,
+            currentForegroundGeneration = 9,
+        )
+        assertEquals(GestureRejectReason.FOREGROUND_CHANGED_AFTER_VALIDATION, decision.reason)
+    }
+
+    @Test fun `projection session change rejects old gesture`() {
+        val gesture = validGesture().copy(projectionSessionGeneration = 4)
+        val decision = GestureSafetyGate.evaluate(
+            gesture, "target.package", "target.package", 2_100, 2_200, true, false, false,
+            currentProjectionSessionGeneration = 5,
+        )
+        assertEquals(GestureRejectReason.PROJECTION_SESSION_CHANGED, decision.reason)
+    }
+
+    @Test fun `user join waits while refresh owns global gesture lease`() {
+        val coordinator = GestureCoordinator()
+        val refresh = validGesture().copy(requestId = "refresh", purpose = GesturePurpose.REFRESH, rallyId = null)
+        val join = validGesture()
+        assertTrue(coordinator.tryAcquire(refresh))
+        assertFalse(coordinator.tryAcquire(join))
+        coordinator.release(refresh.requestId)
+        assertTrue(coordinator.tryAcquire(join))
+    }
+
+    @Test fun `one tap forces overlay without changing radar preference`() {
+        assertTrue(RuntimeMode.ONE_TAP.effectiveOverlayEnabled(false))
+        assertFalse(RuntimeMode.RADAR.effectiveOverlayEnabled(false))
+        assertTrue(RuntimeMode.RADAR.effectiveOverlayEnabled(true))
+    }
+
     @Test fun `unknown screen emits no gesture`() {
         val result = policy.evaluate(request, frame(screen = ScreenState.UNKNOWN), tracking(track()))
         assertEquals(OneTapRejectReason.WRONG_SCREEN, result.reason)

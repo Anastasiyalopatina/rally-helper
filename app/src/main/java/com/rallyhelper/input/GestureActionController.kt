@@ -9,6 +9,7 @@ import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.atomic.AtomicLong
 import radar.vision.GestureGateDecision
 import radar.vision.GestureRejectReason
 import radar.vision.GestureRequest
@@ -22,6 +23,8 @@ object GestureActionController {
 
     @Volatile private var service: RefreshAccessibilityService? = null
     @Volatile private var cancellationGeneration = 0L
+    private val projectionCounter = AtomicLong()
+    @Volatile private var currentProjectionSessionGeneration = 0L
 
     internal fun attach(value: RefreshAccessibilityService) {
         service = value
@@ -70,11 +73,35 @@ object GestureActionController {
         cancellationGeneration++
         mainHandler.post { service?.cancelAllRequests() }
     }
+
+    fun foregroundSnapshot(): ForegroundSnapshot? = service?.foregroundSnapshot()
+    fun isConnected(): Boolean = service != null
+
+    fun beginProjectionSession(): Long = projectionCounter.incrementAndGet().also {
+        currentProjectionSessionGeneration = it
+        cancelAll()
+    }
+
+    fun endProjectionSession(generation: Long) {
+        if (currentProjectionSessionGeneration == generation) {
+            currentProjectionSessionGeneration = 0L
+            cancelAll()
+        }
+    }
+
+    fun currentProjectionSessionGeneration(): Long = currentProjectionSessionGeneration
 }
+
+data class ForegroundSnapshot(
+    val packageName: String?,
+    val generation: Long,
+    val observedAtMonotonicMs: Long?,
+)
 
 class RefreshAccessibilityService : AccessibilityService() {
     @Volatile private var lastForegroundPackage: String? = null
     @Volatile private var lastForegroundEventMonotonicMs: Long? = null
+    @Volatile private var foregroundGeneration: Long = 0
     private val cancelledRequestIds = mutableSetOf<String>()
     private var inFlightRequestId: String? = null
 
@@ -97,9 +124,25 @@ class RefreshAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
-        lastForegroundPackage = event.packageName?.toString()
+        val eventPackage = event.packageName?.toString()
+        val eventClass = event.className?.toString()
+        foregroundGeneration++
+        // A tap on our TYPE_APPLICATION_OVERLAY can emit a window-state event under
+        // our package even though the target activity remains focused underneath it.
+        // Do not let that transient overlay replace the verified foreground app.
+        // MainActivity is deliberately not ignored, so returning to Rally Helper
+        // still invalidates every request that was validated over the target app.
+        if (eventPackage == packageName && eventClass?.endsWith(".MainActivity") != true) return
+        lastForegroundPackage = eventPackage
         lastForegroundEventMonotonicMs = SystemClock.elapsedRealtime()
     }
+
+    @Synchronized
+    internal fun foregroundSnapshot() = ForegroundSnapshot(
+        lastForegroundPackage,
+        foregroundGeneration,
+        lastForegroundEventMonotonicMs,
+    )
 
     internal fun cancelAllRequests() {
         inFlightRequestId?.let(cancelledRequestIds::add)
@@ -124,6 +167,8 @@ class RefreshAccessibilityService : AccessibilityService() {
             serviceConnected = true,
             cancelled = request.requestId in cancelledRequestIds,
             gestureInFlight = inFlightRequestId != null,
+            currentForegroundGeneration = foregroundGeneration,
+            currentProjectionSessionGeneration = GestureActionController.currentProjectionSessionGeneration(),
         )
         if (!decision.allowed) {
             cancelledRequestIds.remove(request.requestId)

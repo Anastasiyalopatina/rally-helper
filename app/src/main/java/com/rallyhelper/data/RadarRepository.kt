@@ -28,9 +28,12 @@ class RadarRepository private constructor(private val database: RadarDatabase) {
             summary.eligible,
             summary.policySkipped,
             summary.shadowWouldAttempts,
-            summary.actualAttempts,
-            summary.actualSuccesses,
-            summary.actualFailures,
+            summary.oneTapOpenAttempts,
+            summary.oneTapOpenSuccesses,
+            summary.oneTapOpenFailures,
+            summary.joinAttempts,
+            summary.joinSuccesses,
+            summary.joinFailures,
         )
     }
 
@@ -89,7 +92,7 @@ class RadarRepository private constructor(private val database: RadarDatabase) {
     companion object {
         fun create(context: Context): RadarRepository = RadarRepository(
             Room.databaseBuilder(context, RadarDatabase::class.java, "radar.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build(),
         )
 
@@ -132,6 +135,23 @@ class RadarRepository private constructor(private val database: RadarDatabase) {
                         "shadowWouldAttempts = CASE WHEN mode = 'SHADOW_AUTO' THEN attempts ELSE 0 END, " +
                         "actualAttempts = CASE WHEN mode = 'SHADOW_AUTO' THEN 0 ELSE attempts END, " +
                         "actualSuccesses = successes, actualFailures = failures",
+                )
+            }
+        }
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE RadarSession ADD COLUMN oneTapOpenAttempts INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE RadarSession ADD COLUMN oneTapOpenSuccesses INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE RadarSession ADD COLUMN oneTapOpenFailures INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE RadarSession ADD COLUMN joinAttempts INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE RadarSession ADD COLUMN joinSuccesses INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE RadarSession ADD COLUMN joinFailures INTEGER NOT NULL DEFAULT 0")
+                database.execSQL(
+                    "UPDATE RadarSession SET " +
+                        "oneTapOpenAttempts = CASE WHEN mode = 'ONE_TAP' THEN actualAttempts ELSE 0 END, " +
+                        "oneTapOpenSuccesses = CASE WHEN mode = 'ONE_TAP' THEN actualSuccesses ELSE 0 END, " +
+                        "oneTapOpenFailures = CASE WHEN mode = 'ONE_TAP' THEN actualFailures ELSE 0 END",
                 )
             }
         }

@@ -1,6 +1,6 @@
 # ONE_TAP test status
 
-> Historical pre-D0 evidence below. The canonical current status is `docs/CURRENT_STATE.md`; ONE_TAP_A now has a runtime implementation and 14 unit tests. Device evidence must still be tied to the final installed SHA.
+> The table below is a historical pre-D0 result. It is not the current capability statement. See `docs/CURRENT_STATE.md`: ONE_TAP_A is implemented and active in experimental mode.
 
 Date: 2026-09-10.
 
@@ -17,6 +17,6 @@ Date: 2026-09-10.
 | ONE_TAP gesture implementation | NOT_PRESENT |
 | ONE_TAP live test | BLOCKED |
 
-A narrowly scoped Accessibility service exists only for guarded refresh. It cannot retrieve window content and it has no join/send API. ONE_TAP join/send remains deliberately locked until R1–R8 have confirmed real sequences, replay passes, and independent holdout has zero false-actionable cases. No-plus is sufficient for the safety invariant; returning-squad support and a Shadow-decision quota are not prerequisites for ONE_TAP_A.
+Those rows describe the earlier candidate only. The current runtime has a purpose-scoped `JOIN_PLUS` path, fresh-identity revalidation, foreground/projection generation guards and post-gesture screen verification. It still has no `SEND` path and cannot retrieve window content.
 
-NEXT GATE: **WAITING FOR ORDINARY-SESSION EVIDENCE**.
+Current deterministic overlay-to-physical-tap integration: **PASS**. Real-target recognition and the first supervised live attempt: **PENDING / NOT_OBSERVED**. These are separate claims; the deterministic target is not CV evidence.

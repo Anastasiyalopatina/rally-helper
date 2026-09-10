@@ -119,6 +119,8 @@ class OneTapFlowCoordinator(
         tracking: TrackingUpdate,
         policy: OneTapOpenPolicy,
         expectedPackage: String,
+        expectedForegroundGeneration: Long = 0,
+        projectionSessionGeneration: Long = 0,
     ): OneTapFlowUpdate {
         val awaiting = state as? OneTapFlowState.AwaitingFresh ?: return OneTapFlowUpdate.Ignored
         val decision = policy.evaluate(awaiting.request, frame, tracking)
@@ -137,6 +139,8 @@ class OneTapFlowCoordinator(
             expiresAtMonotonicMs = frame.observedAtMonotonicMs + requestTtlMs,
             expectedPackage = expectedPackage,
             expectedScreen = ScreenState.EVENT_LIST,
+            expectedForegroundGeneration = expectedForegroundGeneration,
+            projectionSessionGeneration = projectionSessionGeneration,
         )
         state = OneTapFlowState.Dispatching(awaiting.request, gesture)
         return OneTapFlowUpdate.Dispatch(gesture)

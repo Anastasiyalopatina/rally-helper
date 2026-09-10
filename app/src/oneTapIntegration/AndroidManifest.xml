@@ -1,0 +1,7 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <queries>
+        <provider android:authorities="com.rallyhelper.testtarget.state" />
+    </queries>
+    <application android:label="Rally Helper Integration" tools:replace="android:label" />
+</manifest>

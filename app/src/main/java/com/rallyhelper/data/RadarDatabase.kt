@@ -26,6 +26,12 @@ import kotlinx.coroutines.flow.Flow
     @ColumnInfo(defaultValue = "0") val actualAttempts: Long = 0,
     @ColumnInfo(defaultValue = "0") val actualSuccesses: Long = 0,
     @ColumnInfo(defaultValue = "0") val actualFailures: Long = 0,
+    @ColumnInfo(defaultValue = "0") val oneTapOpenAttempts: Long = 0,
+    @ColumnInfo(defaultValue = "0") val oneTapOpenSuccesses: Long = 0,
+    @ColumnInfo(defaultValue = "0") val oneTapOpenFailures: Long = 0,
+    @ColumnInfo(defaultValue = "0") val joinAttempts: Long = 0,
+    @ColumnInfo(defaultValue = "0") val joinSuccesses: Long = 0,
+    @ColumnInfo(defaultValue = "0") val joinFailures: Long = 0,
 )
 
 @Entity data class RallyObservation(
@@ -75,8 +81,11 @@ import kotlinx.coroutines.flow.Flow
     @Query(
         "UPDATE RadarSession SET endedAtEpochMs = :endedAtEpochMs, framesAnalyzed = :frames, " +
             "eligible = :eligible, policySkipped = :skipped, shadowWouldAttempts = :shadowWouldAttempts, " +
-            "actualAttempts = :actualAttempts, actualSuccesses = :actualSuccesses, " +
-            "actualFailures = :actualFailures WHERE id = :sessionId",
+            "actualAttempts = 0, actualSuccesses = 0, actualFailures = 0, " +
+            "oneTapOpenAttempts = :oneTapOpenAttempts, " +
+            "oneTapOpenSuccesses = :oneTapOpenSuccesses, oneTapOpenFailures = :oneTapOpenFailures, " +
+            "joinAttempts = :joinAttempts, joinSuccesses = :joinSuccesses, joinFailures = :joinFailures " +
+            "WHERE id = :sessionId",
     )
     suspend fun endSession(
         sessionId: Long,
@@ -85,9 +94,12 @@ import kotlinx.coroutines.flow.Flow
         eligible: Long,
         skipped: Long,
         shadowWouldAttempts: Long,
-        actualAttempts: Long,
-        actualSuccesses: Long,
-        actualFailures: Long,
+        oneTapOpenAttempts: Long,
+        oneTapOpenSuccesses: Long,
+        oneTapOpenFailures: Long,
+        joinAttempts: Long,
+        joinSuccesses: Long,
+        joinFailures: Long,
     )
     @Query("SELECT * FROM RadarSession ORDER BY startedAtEpochMs DESC LIMIT :limit")
     fun observeRecentSessions(limit: Int = 25): Flow<List<RadarSession>>
@@ -97,7 +109,7 @@ import kotlinx.coroutines.flow.Flow
 
 @Database(
     entities = [RadarSession::class, RallyObservation::class, DetectorDecisionRecord::class, SafetyAbort::class],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 abstract class RadarDatabase : RoomDatabase() {

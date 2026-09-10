@@ -2,6 +2,8 @@
 
 > Historical pre-D0 audit. See `docs/CURRENT_STATE.md` for the implemented experimental ONE_TAP_A runtime.
 
+Current D1 delta: ONE_TAP_A now has a guarded `JOIN_PLUS` gesture path, Room v5 open-result counters and a passing deterministic physical-device E1–E10 matrix. The intentionally gated statements below remain historical; ONE_TAP_B and AUTO are still gated.
+
 Audited scope: the tree currently checked out from `main` plus the product-mode preparation changes in this branch.
 
 ## Implemented

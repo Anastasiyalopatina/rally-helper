@@ -3,6 +3,9 @@ package com.rallyhelper.capture
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.SoundPool
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
 import java.io.DataOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -60,6 +63,23 @@ internal class LocalAlertSound(context: Context) {
             }
         }
     }
+}
+
+/** Shared alert path for both real Radar decisions and the explicit preflight button. */
+internal class LocalAlertFeedback(private val context: Context) {
+    private val sound = LocalAlertSound(context)
+
+    fun emit(soundEnabled: Boolean, vibrationEnabled: Boolean, vibrationMs: Long = 120) {
+        if (soundEnabled) sound.play()
+        if (vibrationEnabled) {
+            val vibrator = context.getSystemService(Vibrator::class.java)
+            if (Build.VERSION.SDK_INT >= 26) {
+                vibrator.vibrate(VibrationEffect.createOneShot(vibrationMs, 90))
+            } else @Suppress("DEPRECATION") vibrator.vibrate(vibrationMs)
+        }
+    }
+
+    fun close() = sound.close()
 }
 
 private fun DataOutputStream.writeIntLE(value: Int) {

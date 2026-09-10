@@ -8,6 +8,9 @@ enum class JoinedState { JOINABLE, ALREADY_JOINED, FULL, NOT_TARGET, UNKNOWN }
 
 enum class RefreshMode { OFF, ALERT_ONLY, AUTO_REFRESH }
 
+fun RuntimeMode.effectiveOverlayEnabled(userPreference: Boolean): Boolean =
+    userPreference || this == RuntimeMode.ONE_TAP
+
 data class RefreshControlCandidate(
     val bounds: NormalizedRect,
     val orangeShapeConfidence: Float,

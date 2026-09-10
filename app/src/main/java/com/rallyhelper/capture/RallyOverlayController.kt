@@ -24,8 +24,8 @@ import radar.vision.ScreenState
 internal data class OverlayCounters(
     val totalSeen: Long,
     val eligible: Long,
-    val realSuccess: Long,
-    val realFailed: Long,
+    val openSuccess: Long,
+    val openFailed: Long,
     val skipped: Long,
     val shadowWouldAttempt: Long,
     val ignored: Long,
@@ -101,7 +101,7 @@ internal class RallyOverlayController(
                     "не подошло ${values.ignored} · не успели ${values.missed}"
             } else {
                 "Всего ${values.totalSeen} · подходит ${values.eligible}\n" +
-                    "✓ вступили ${values.realSuccess} · ошибок ${values.realFailed}\n" +
+                    "Открыто ${values.openSuccess} · ошибок ${values.openFailed}\n" +
                     "пропущено ${values.skipped + values.ignored} · не успели ${values.missed}"
             }
             action?.apply {
@@ -159,6 +159,18 @@ internal class RallyOverlayController(
             right.toDouble() / screenWidth,
             bottom.toDouble() / screenHeight,
         )
+    }
+
+    fun snapToSafeRegion(screenWidth: Int, screenHeight: Int): Boolean {
+        val view = root ?: return false
+        val layout = params ?: return false
+        if (screenWidth <= 0 || screenHeight <= 0) return false
+        mainHandler.post {
+            layout.x = dp(8).coerceAtMost(maxOf(0, screenWidth - view.width))
+            layout.y = maxOf(0, screenHeight - view.height - dp(72))
+            runCatching { windowManager.updateViewLayout(view, layout) }
+        }
+        return true
     }
 
     fun close() = mainHandler.post { removeView() }

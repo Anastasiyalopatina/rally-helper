@@ -88,6 +88,45 @@ class RadarMigrationTest {
         ).use { db -> assertPreserved(db, "old-v1") }
     }
 
+    @Test
+    fun migrate4To5_renamesOneTapOpenCountersWithoutInventingJoins() {
+        helper.createDatabase("migration-4-5", 4).use { db ->
+            insertRecords(db, "old-v4", version = 4)
+            db.execSQL(
+                "UPDATE RadarSession SET mode = 'ONE_TAP', actualAttempts = 3, " +
+                    "actualSuccesses = 2, actualFailures = 1 WHERE id = 1",
+            )
+        }
+        helper.runMigrationsAndValidate("migration-4-5", 5, true, RadarRepository.MIGRATION_4_5).use { db ->
+            db.query(
+                "SELECT oneTapOpenAttempts, oneTapOpenSuccesses, oneTapOpenFailures, " +
+                    "joinAttempts, joinSuccesses, joinFailures FROM RadarSession WHERE id = 1",
+            ).use { cursor ->
+                check(cursor.moveToFirst())
+                assertEquals(3L, cursor.getLong(0))
+                assertEquals(2L, cursor.getLong(1))
+                assertEquals(1L, cursor.getLong(2))
+                assertEquals(0L, cursor.getLong(3))
+                assertEquals(0L, cursor.getLong(4))
+                assertEquals(0L, cursor.getLong(5))
+            }
+        }
+    }
+
+    @Test
+    fun migrate1To5_preservesExistingRecords() {
+        createV1("migration-1-5")
+        helper.runMigrationsAndValidate(
+            "migration-1-5",
+            5,
+            true,
+            RadarRepository.MIGRATION_1_2,
+            RadarRepository.MIGRATION_2_3,
+            RadarRepository.MIGRATION_3_4,
+            RadarRepository.MIGRATION_4_5,
+        ).use { db -> assertPreserved(db, "old-v1") }
+    }
+
     private fun createV1(name: String) {
         helper.createDatabase(name, 1).use { db -> insertRecords(db, "old-v1", version = 1) }
     }

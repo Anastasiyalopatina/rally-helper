@@ -17,6 +17,6 @@ The following items require a connected physical Android device and must not be 
 - redirect capability for a returning squad;
 - overlay behavior across additional vendor permission/lifecycle variants;
 - a controlled Capture Lab OFF versus ARMED CPU, RSS and latency benchmark;
-- sound and vibration delivery on a real eligible target;
+- sound and vibration delivery under the user's final device sound profile (the app pipeline was invoked on-device, while the current system profile muted audio and rejected vibration);
 
-Until these are measured, `ONE_TAP` and `AUTO` input are locked. Unknown evidence always produces no action.
+These unknowns do not relock experimental ONE_TAP_A. They do keep ONE_TAP_B and AUTO unavailable, and unknown evidence always produces no action.
