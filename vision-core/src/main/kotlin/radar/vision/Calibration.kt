@@ -19,6 +19,8 @@ data class CalibrationProfile(
     val cardScan: NormalizedRect = NormalizedRect(0.02, 0.14, 0.98, 0.88),
     val cardArtworkLocal: NormalizedRect = NormalizedRect(0.01, 0.12, 0.35, 0.80),
     val bossArtworkLocal: NormalizedRect = NormalizedRect(0.02, 0.16, 0.34, 0.76),
+    val identityTitleLocal: NormalizedRect = NormalizedRect(0.02, 0.025, 0.36, 0.18),
+    val identityCoordinatesLocal: NormalizedRect = NormalizedRect(0.52, 0.15, 0.96, 0.30),
     val levelDigitsLocal: NormalizedRect = NormalizedRect(0.075, 0.09, 0.18, 0.205),
     val participantCurrentLocal: NormalizedRect = NormalizedRect(0.84, 0.835, 0.87, 0.93),
     val participantCapacityLocal: NormalizedRect = NormalizedRect(0.887, 0.835, 0.915, 0.93),

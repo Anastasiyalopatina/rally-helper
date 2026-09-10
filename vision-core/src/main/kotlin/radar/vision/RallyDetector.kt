@@ -34,13 +34,16 @@ class RallyDetector(
         )
         val screen = when {
             sendBlue >= 0.16 && marchPanelLight >= 0.42 -> ScreenState.MARCH_SCREEN
-            eventCanvas >= 0.70 && eventHeader >= 0.25 -> ScreenState.EVENT_LIST
+            // A populated list contains large saturated artwork/avatar regions, so its
+            // neutral canvas ratio is naturally lower than the empty-state reference.
+            // The dark-blue header remains the strong discriminator from helper UI.
+            eventCanvas >= 0.52 && eventHeader >= 0.25 -> ScreenState.EVENT_LIST
             worldGreen >= 0.42 && worldUiInk >= 0.10 -> ScreenState.WORLD_MAP
             else -> ScreenState.UNKNOWN
         }
         val confidence = when (screen) {
             ScreenState.MARCH_SCREEN -> minOf(scaled(sendBlue, 0.16, 0.48), scaled(marchPanelLight, 0.42, 0.75))
-            ScreenState.EVENT_LIST -> minOf(scaled(eventCanvas, 0.70, 0.94), scaled(eventHeader, 0.25, 0.72))
+            ScreenState.EVENT_LIST -> minOf(scaled(eventCanvas, 0.39, 0.64), scaled(eventHeader, 0.25, 0.72))
             ScreenState.WORLD_MAP -> minOf(scaled(worldGreen, 0.42, 0.74), scaled(worldUiInk, 0.10, 0.30))
             ScreenState.UNKNOWN -> 0f
         }
@@ -87,7 +90,7 @@ class RallyDetector(
     }
 
     private fun hasStructuralCardEvidence(candidate: RallyCandidate): Boolean =
-        candidate.bossType != BossType.UNKNOWN ||
+        candidate.bossType == BossType.TARGET ||
             candidate.level != null ||
             (candidate.participantCount != null && candidate.capacity != null) ||
             candidate.confidences.plus >= profile.classifierThresholds.absoluteConfidence
@@ -197,7 +200,31 @@ class RallyDetector(
                 plus = plusConfidence,
                 timer = countdown.confidence,
             ),
+            identityFingerprint = RallyIdentityFingerprint(
+                targetTitleHash = darkAverageHash(image, card.local(profile.identityTitleLocal)),
+                coordinatesHash = darkAverageHash(image, card.local(profile.identityCoordinatesLocal)),
+            ),
         )
+    }
+
+    private fun darkAverageHash(image: ArgbImage, rect: NormalizedRect): Long {
+        val box = pixelBox(image, rect)
+        val values = IntArray(64)
+        var sum = 0L
+        var index = 0
+        for (gy in 0 until 4) for (gx in 0 until 16) {
+            val x = box.left + ((gx + 0.5) * box.width / 16).toInt()
+            val y = box.top + ((gy + 0.5) * box.height / 4).toInt()
+            val value = luminance(image.argb(x.coerceAtMost(image.width - 1), y.coerceAtMost(image.height - 1)))
+            values[index++] = value
+            sum += value
+        }
+        val mean = sum.toDouble() / values.size
+        var hash = 0L
+        values.forEachIndexed { bit, value ->
+            if (value < mean) hash = hash or (1L shl bit)
+        }
+        return hash
     }
 
     private fun classifyBoss(image: ArgbImage, card: NormalizedRect): Recognition<BossType> {
@@ -213,15 +240,27 @@ class RallyDetector(
         val winner = ranked.first()
         val runner = ranked.getOrNull(1)?.second ?: 0f
         val thresholds = profile.classifierThresholds
-        val accepted = winner.second >= thresholds.absoluteConfidence && winner.second - runner >= thresholds.winnerMargin
+        // This is intentionally a one-class safety decision: only a positively confirmed
+        // target may become TARGET. Every other valid event card is NON_TARGET, which keeps
+        // unfamiliar creature variants fail-closed instead of making them actionable.
+        val targetAccepted = winner.first == BossType.TARGET &&
+            winner.second >= thresholds.absoluteConfidence &&
+            winner.second - runner >= thresholds.winnerMargin
+        if (!targetAccepted) {
+            val targetConfidence = ranked.firstOrNull { it.first == BossType.TARGET }?.second ?: 0f
+            return Recognition(
+                value = BossType.NON_TARGET,
+                confidence = (1f - targetConfidence).coerceIn(0f, 1f),
+                runnerUpConfidence = targetConfidence,
+                accepted = true,
+                rejectionReason = "target signature not confirmed",
+            )
+        }
         return Recognition(
-            value = winner.first.takeIf { accepted }, confidence = winner.second,
-            runnerUpConfidence = runner, accepted = accepted,
-            rejectionReason = when {
-                winner.second < thresholds.absoluteConfidence -> "boss confidence below threshold"
-                winner.second - runner < thresholds.winnerMargin -> "boss winner margin too small"
-                else -> null
-            },
+            value = BossType.TARGET,
+            confidence = winner.second,
+            runnerUpConfidence = runner,
+            accepted = true,
         )
     }
 

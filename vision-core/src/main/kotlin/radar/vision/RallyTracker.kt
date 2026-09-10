@@ -66,6 +66,8 @@ class RallyTracker(
     private fun score(track: TrackedRally, b: RallyCandidate, now: Long): Double {
         val a = track.candidate
         val elapsedSeconds = ((now - track.lastSeenMonotonicMs).coerceAtLeast(0) / 1_000.0)
+        val identity = identitySimilarity(a.identityFingerprint, b.identityFingerprint)
+        if (identity != null && identity <= 0.0) return 0.0
         val geometry = a.cardBounds.intersectionOverUnion(b.cardBounds)
         val boss = if (a.bossType == b.bossType && a.bossType != BossType.UNKNOWN) 1.0 else 0.0
         val level = if (a.level != null && a.level == b.level) 1.0 else 0.0
@@ -82,7 +84,20 @@ class RallyTracker(
             else -> 0.0
         }
         val timing = (1.0 - elapsedSeconds / 4.0).coerceIn(0.0, 1.0)
-        return geometry * 0.18 + boss * 0.10 + level * 0.08 + capacity * 0.08 +
-            participants * 0.12 + timer * 0.38 + timing * 0.06
+        return if (identity != null) {
+            identity * 0.64 + geometry * 0.08 + boss * 0.05 + level * 0.04 + capacity * 0.04 +
+                participants * 0.05 + timer * 0.08 + timing * 0.02
+        } else {
+            geometry * 0.18 + boss * 0.10 + level * 0.08 + capacity * 0.08 +
+                participants * 0.12 + timer * 0.38 + timing * 0.06
+        }
+    }
+
+    private fun identitySimilarity(a: RallyIdentityFingerprint?, b: RallyIdentityFingerprint?): Double? {
+        if (a == null || b == null) return null
+        val titleDistance = java.lang.Long.bitCount(a.targetTitleHash xor b.targetTitleHash) / 64.0
+        val coordinateDistance = java.lang.Long.bitCount(a.coordinatesHash xor b.coordinatesHash) / 64.0
+        val distance = (titleDistance + coordinateDistance) / 2.0
+        return if (distance <= 0.28) 1.0 - distance / 0.28 else 0.0
     }
 }

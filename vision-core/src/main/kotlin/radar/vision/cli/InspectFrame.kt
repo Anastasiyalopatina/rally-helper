@@ -23,7 +23,10 @@ fun main(args: Array<String>) {
             "rally[$index] boss=${rally.bossType} level=${rally.level} " +
                 "participants=${rally.participantCount}/${rally.capacity} timer=${rally.remainingSeconds} " +
                 "plus=${rally.joinPlusBounds.size} state=${rally.joinedState} " +
-                "joinable=${rally.joinable} confidence=${rally.confidences}",
+                "joinable=${rally.joinable} identity=${rally.identityFingerprint?.let { fingerprint ->
+                    java.lang.Long.toUnsignedString(fingerprint.targetTitleHash, 16) + ":" +
+                        java.lang.Long.toUnsignedString(fingerprint.coordinatesHash, 16)
+                }} confidence=${rally.confidences}",
         )
     }
     println("diagnostics=${analysis.diagnostics.toSortedMap()}")

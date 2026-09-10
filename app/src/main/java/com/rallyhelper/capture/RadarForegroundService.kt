@@ -505,7 +505,7 @@ class RadarForegroundService : Service() {
                                     skipMin = currentSettings.skipMin,
                                     skipMax = currentSettings.skipMax,
                                     safetyMarginSeconds = currentSettings.safetyMarginSeconds,
-                                    detectorVersion = "c3-card-fusion-v1",
+                                    detectorVersion = "c3-static-identity-v2",
                                     templateVersion = "runtime-template-v2",
                                 ),
                             )

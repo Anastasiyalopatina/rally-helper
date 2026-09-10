@@ -40,10 +40,11 @@ fun main() {
         timer: Int,
         bossType: BossType = BossType.TARGET,
         level: Int = 10,
+        identity: radar.vision.RallyIdentityFingerprint? = null,
     ) = RallyCandidate(
         null, bossType, level, count, 5, timer, 0, box,
         listOf(NormalizedRect(0.6, box.top + 0.05, 0.65, box.top + 0.09)), true, false, JoinedState.JOINABLE,
-        RallyConfidences(1f, 1f, 1f, 1f, 1f, 1f),
+        RallyConfidences(1f, 1f, 1f, 1f, 1f, 1f), identity,
     )
     fun frame(id: Long, rallies: List<RallyCandidate>) = FrameAnalysis(
         frameId = id,
@@ -155,6 +156,17 @@ fun main() {
     check(reordered.active.single { it.presentInCurrentFrame }.id == lowerId) {
         "Timer trajectory must preserve the lower rally identity after reorder"
     }
+
+    val visualIdentityA = radar.vision.RallyIdentityFingerprint(0x1111111111111111, 0x2222222222222222)
+    val visualIdentityB = radar.vision.RallyIdentityFingerprint(0xeeeeeeeeeeeeeeeeUL.toLong(), 0xddddddddddddddddUL.toLong())
+    val identityTracker = RallyTracker()
+    val identityA = identityTracker.update(frame(40, listOf(candidate(upper, 1, 50, identity = visualIdentityA)))).active.single()
+    val movedIdentityA = identityTracker.update(frame(41, listOf(candidate(lower, 3, 49, identity = visualIdentityA)))).active
+        .single { it.presentInCurrentFrame }
+    check(movedIdentityA.id == identityA.id) { "Stable title+coordinate identity must survive a card move" }
+    val distinctIdentity = identityTracker.update(frame(42, listOf(candidate(lower, 1, 48, identity = visualIdentityB)))).active
+        .single { it.presentInCurrentFrame }
+    check(distinctIdentity.id != identityA.id) { "Different title+coordinate identity must create a different rally" }
 
     val machine = AutomationStateMachine()
     check(machine.dispatch(AutomationEvent.DelayElapsed(99), 0) is TransitionResult.Rejected)

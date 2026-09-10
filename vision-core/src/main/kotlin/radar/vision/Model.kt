@@ -82,6 +82,11 @@ data class RallyConfidences(
 @JvmInline
 value class RallyId(val value: String)
 
+data class RallyIdentityFingerprint(
+    val targetTitleHash: Long,
+    val coordinatesHash: Long,
+)
+
 data class RallyCandidate(
     val ephemeralId: RallyId?,
     val bossType: BossType,
@@ -96,6 +101,7 @@ data class RallyCandidate(
     val full: Boolean?,
     val joinedState: JoinedState,
     val confidences: RallyConfidences,
+    val identityFingerprint: RallyIdentityFingerprint? = null,
 )
 
 enum class SquadState { FREE, MOVING, RETURNING, GATHERING, OCCUPIED_OTHER, LOCKED, UNKNOWN }
