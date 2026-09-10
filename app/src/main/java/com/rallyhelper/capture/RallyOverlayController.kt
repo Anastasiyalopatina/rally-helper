@@ -16,13 +16,19 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import radar.vision.NormalizedRect
 import radar.vision.RallyCandidate
+import radar.vision.RallyId
 import radar.vision.RuntimeMode
+import radar.vision.ScreenState
 
 internal data class OverlayCounters(
+    val totalSeen: Long,
+    val eligible: Long,
     val realSuccess: Long,
     val realFailed: Long,
     val skipped: Long,
     val shadowWouldAttempt: Long,
+    val ignored: Long,
+    val missed: Long,
 )
 
 internal data class OverlayAutomationState(
@@ -33,7 +39,7 @@ internal data class OverlayAutomationState(
 
 internal class RallyOverlayController(
     private val context: Context,
-    private val onJoinRequested: () -> Unit,
+    private val onJoinRequested: (RallyId) -> Unit,
     private val onPauseRequested: () -> Unit,
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -45,6 +51,8 @@ internal class RallyOverlayController(
     private var action: Button? = null
     @Volatile private var params: WindowManager.LayoutParams? = null
     @Volatile private var enabled = false
+    @Volatile private var displayedRallyId: RallyId? = null
+    @Volatile private var displayedFrameId: Long? = null
 
     fun setEnabled(value: Boolean) {
         enabled = value
@@ -53,6 +61,8 @@ internal class RallyOverlayController(
 
     fun update(
         mode: RuntimeMode,
+        rallyId: RallyId?,
+        frameId: Long?,
         rally: RallyCandidate?,
         values: OverlayCounters,
         automation: OverlayAutomationState = OverlayAutomationState(),
@@ -60,6 +70,8 @@ internal class RallyOverlayController(
         mainHandler.post {
             if (!enabled || !Settings.canDrawOverlays(context)) return@post
             ensureView()
+            displayedRallyId = rallyId
+            displayedFrameId = frameId
             title?.text = when {
                 rally == null -> mode.displayName()
                 else -> "${mode.displayName()} · ${rally.level ?: "?"} ур · " +
@@ -72,9 +84,13 @@ internal class RallyOverlayController(
                 else -> automation.phase
             }
             counters?.text = if (mode == RuntimeMode.SHADOW_AUTO) {
-                "◇ ${values.shadowWouldAttempt} simulated   ↷ ${values.skipped}"
+                "Всего ${values.totalSeen} · подходит ${values.eligible}\n" +
+                    "◇ симуляций ${values.shadowWouldAttempt} · пропущено ${values.skipped}\n" +
+                    "не подошло ${values.ignored} · не успели ${values.missed}"
             } else {
-                "✓ ${values.realSuccess}   ✕ ${values.realFailed}   ↷ ${values.skipped}"
+                "Всего ${values.totalSeen} · подходит ${values.eligible}\n" +
+                    "✓ вступили ${values.realSuccess} · ошибок ${values.realFailed}\n" +
+                    "пропущено ${values.skipped + values.ignored} · не успели ${values.missed}"
             }
             action?.apply {
                 visibility = when (mode) {
@@ -82,12 +98,17 @@ internal class RallyOverlayController(
                     RuntimeMode.RADAR -> View.GONE
                 }
                 text = when {
+                    mode == RuntimeMode.ONE_TAP && rallyId == null -> "НЕТ ЦЕЛИ"
                     mode == RuntimeMode.ONE_TAP -> "ВСТУПИТЬ"
                     automation.paused -> "RESUME"
                     else -> "PAUSE"
                 }
+                isEnabled = mode != RuntimeMode.ONE_TAP || rallyId != null
                 setOnClickListener {
-                    if (mode == RuntimeMode.ONE_TAP) onJoinRequested() else onPauseRequested()
+                    if (mode == RuntimeMode.ONE_TAP) {
+                        val requestedId = displayedRallyId
+                        if (requestedId != null && displayedFrameId != null) onJoinRequested(requestedId)
+                    } else onPauseRequested()
                 }
             }
         }
@@ -149,7 +170,7 @@ internal class RallyOverlayController(
             x = dp(8)
             y = (metrics.heightPixels * 0.55).toInt()
         }
-        installDrag(panel, layout)
+        installDrag(heading, panel, layout)
         windowManager.addView(panel, layout)
         root = panel
         title = heading
@@ -157,14 +178,18 @@ internal class RallyOverlayController(
         counters = stats
         action = button
         params = layout
+        panel.post {
+            layout.y = maxOf(0, metrics.heightPixels - panel.height - dp(72))
+            runCatching { windowManager.updateViewLayout(panel, layout) }
+        }
     }
 
-    private fun installDrag(view: View, layout: WindowManager.LayoutParams) {
+    private fun installDrag(handle: View, view: View, layout: WindowManager.LayoutParams) {
         var originX = 0
         var originY = 0
         var touchX = 0f
         var touchY = 0f
-        view.setOnTouchListener { _, event ->
+        handle.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     originX = layout.x; originY = layout.y; touchX = event.rawX; touchY = event.rawY
@@ -172,12 +197,8 @@ internal class RallyOverlayController(
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val metrics = context.resources.displayMetrics
-                    // Keep the panel in the left safe strip, away from known plus/send regions.
-                    val maxX = (metrics.widthPixels * 0.06).toInt()
-                    val maxY = minOf(
-                        maxOf(0, metrics.heightPixels - view.height),
-                        (metrics.heightPixels * 0.64).toInt(),
-                    )
+                    val maxX = maxOf(0, metrics.widthPixels - view.width)
+                    val maxY = maxOf(0, metrics.heightPixels - view.height)
                     layout.x = (originX + event.rawX - touchX).toInt().coerceIn(0, maxX)
                     layout.y = (originY + event.rawY - touchY).toInt().coerceIn(0, maxY)
                     windowManager.updateViewLayout(view, layout)
@@ -191,6 +212,7 @@ internal class RallyOverlayController(
     private fun removeView() {
         root?.let { runCatching { windowManager.removeView(it) } }
         root = null; title = null; timer = null; counters = null; action = null; params = null
+        displayedRallyId = null; displayedFrameId = null
     }
 
     private fun dp(value: Int): Int = (value * context.resources.displayMetrics.density).toInt()
@@ -200,5 +222,24 @@ internal class RallyOverlayController(
         RuntimeMode.ONE_TAP -> "ONE_TAP"
         RuntimeMode.AUTO -> "AUTO"
         RuntimeMode.SHADOW_AUTO -> "SHADOW"
+    }
+}
+
+internal object OverlayCvSafety {
+    // The default bottom placement stays clear of the populated event-card area. The broader
+    // detector scan remains masked, while semantic card evidence rejects masked blank space.
+    private val eventCritical = NormalizedRect(0.02, 0.14, 0.98, 0.68)
+    private val marchCritical = NormalizedRect(0.14, 0.47, 0.86, 0.82)
+    private val worldCritical = NormalizedRect(0.01, 0.145, 0.39, 0.34)
+
+    fun overlapsCritical(bounds: NormalizedRect, screen: ScreenState): Boolean {
+        val critical = when (screen) {
+            ScreenState.EVENT_LIST -> eventCritical
+            ScreenState.MARCH_SCREEN -> marchCritical
+            ScreenState.WORLD_MAP -> worldCritical
+            ScreenState.UNKNOWN -> return false
+        }
+        return bounds.left < critical.right && bounds.right > critical.left &&
+            bounds.top < critical.bottom && bounds.bottom > critical.top
     }
 }

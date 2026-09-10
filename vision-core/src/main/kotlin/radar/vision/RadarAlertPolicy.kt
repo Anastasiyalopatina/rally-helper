@@ -24,7 +24,7 @@ class RadarAlertPolicy(
                 rally.bossType != BossType.TARGET -> "not a confirmed target"
                 rally.level == null -> "level unknown"
                 rally.joinPlusBounds.isEmpty() -> "plus unknown"
-                participantKnown && rally.capacity!! - rally.participantCount!! < policy.minimumFreeSlots -> "not enough free slots"
+                participantKnown && rally.capacity!! - rally.participantCount!! < 1 -> "no free slots"
                 participantKnown && rally.joinedState != JoinedState.JOINABLE -> "rally not joinable"
                 participantKnown && rally.confidences.boss < policy.minBossConfidence -> "boss confidence too low"
                 participantKnown && rally.confidences.level < policy.minLevelConfidence -> "level confidence too low"

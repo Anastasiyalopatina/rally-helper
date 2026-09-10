@@ -55,6 +55,7 @@ import com.rallyhelper.data.RadarRepository
 import com.rallyhelper.data.RadarSession
 import com.rallyhelper.data.RallyObservation
 import com.rallyhelper.debug.CaptureLabLabel
+import com.rallyhelper.debug.CaptureDatasetSplit
 import com.rallyhelper.debug.CaptureLabStore
 import com.rallyhelper.debug.DebugCaptureStore
 import kotlinx.coroutines.launch
@@ -86,6 +87,8 @@ class MainActivity : ComponentActivity() {
         var captureLabel by remember { mutableStateOf(CaptureLabLabel.UNKNOWN_UI) }
         var captureValueText by remember { mutableStateOf("") }
         val captureLabFiles = remember { CaptureLabStore(this@MainActivity) }
+        var captureSplit by remember { mutableStateOf(CaptureDatasetSplit.TUNING) }
+        var validationSummary by remember { mutableStateOf(captureLabFiles.validationSummary()) }
         var pendingExportPath by remember { mutableStateOf<String?>(null) }
         val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
         val overlayPermission = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {}
@@ -160,16 +163,14 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     if (settings.selectedLevels.isEmpty()) Text("Выберите хотя бы один уровень.", color = Color.Red)
-                    ValueSlider("Минимум свободных мест", settings.minimumFreeSlots, 1..5) { value ->
-                        scope.launch { settingsStore.setMinimumFreeSlots(value) }
-                    }
+                    Text("Свободные места: вступать, если доступно хотя бы одно.")
                     if (settings.mode == RuntimeMode.AUTO || settings.mode == RuntimeMode.SHADOW_AUTO) {
                         HorizontalDivider()
                         RangeValueSlider(
                             "Задержка перед присоединением, сек",
                             settings.delayMinSeconds,
                             settings.delayMaxSeconds,
-                            0..120,
+                            0..30,
                         ) { min, max -> scope.launch { settingsStore.setDelayRange(min, max) } }
                         Text("Задержка выбирается один раз; после неё обязательна свежая проверка.")
                         HorizontalDivider()
@@ -180,9 +181,13 @@ class MainActivity : ComponentActivity() {
                             0..20,
                         ) { min, max -> scope.launch { settingsStore.setSkipRange(min, max) } }
                     }
-                    ValueSlider("Запас времени, сек", settings.safetyMarginSeconds, 0..30) { value ->
+                    ValueSlider("Резерв до конца таймера, сек", settings.safetyMarginSeconds, 0..30) { value ->
                         scope.launch { settingsStore.setSafetyMarginSeconds(value) }
                     }
+                    Text(
+                        "Отряд считается успевающим, только если время пути плюс этот резерв меньше " +
+                            "оставшегося времени сбора.",
+                    )
                     SettingSwitch("Звук", settings.soundEnabled) {
                         scope.launch { settingsStore.setSoundEnabled(it) }
                     }
@@ -248,6 +253,14 @@ class MainActivity : ComponentActivity() {
                             captureLabel = labels[(captureLabel.ordinal + 1) % labels.size]
                         }) { Text("Сменить метку") }
                     }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ModeButton("TUNING", captureSplit == CaptureDatasetSplit.TUNING) {
+                            captureSplit = CaptureDatasetSplit.TUNING
+                        }
+                        ModeButton("HOLDOUT", captureSplit == CaptureDatasetSplit.HOLDOUT) {
+                            captureSplit = CaptureDatasetSplit.HOLDOUT
+                        }
+                    }
                     if (captureLabel == CaptureLabLabel.TRAVEL_TIME || captureLabel == CaptureLabLabel.RALLY_COUNTDOWN) {
                         OutlinedTextField(
                             value = captureValueText,
@@ -269,11 +282,29 @@ class MainActivity : ComponentActivity() {
                                         this@MainActivity,
                                         captureLabel,
                                         captureValueText.toIntOrNull(),
+                                        captureSplit,
                                     ),
                                 )
                             },
-                        ) { Text("Сохранить 5 секунд") }
+                        ) { Text("MARK SCENARIO") }
                     }
+                    Text("Сохраняется ограниченное окно: около 3 сек до метки и 3 сек после.")
+                    OutlinedButton(onClick = { validationSummary = captureLabFiles.validationSummary() }) {
+                        Text("Обновить LIVE VALIDATION")
+                    }
+                    Text(
+                        "LIVE VALIDATION · empty ${validationSummary.labelCounts[CaptureLabLabel.EVENT_EMPTY] ?: 0}/1 · " +
+                            "target L5 ${validationSummary.labelCounts[CaptureLabLabel.TARGET_LEVEL_5_JOINABLE] ?: 0}/1 · " +
+                            "target L10 ${validationSummary.labelCounts[CaptureLabLabel.TARGET_LEVEL_10_JOINABLE] ?: 0}/1 · " +
+                            "non-target ${validationSummary.labelCounts[CaptureLabLabel.NON_TARGET] ?: 0}/1 · " +
+                            "full ${validationSummary.labelCounts[CaptureLabLabel.TARGET_FULL] ?: 0}/1 · " +
+                            "joined ${validationSummary.labelCounts[CaptureLabLabel.TARGET_ALREADY_JOINED] ?: 0}/1",
+                    )
+                    Text(
+                        "Shadow ${validationSummary.shadowWouldAttempts}/100 · travel " +
+                            "${validationSummary.distinctTravelTimes.size}/5 · holdout ${validationSummary.holdoutArchives}/100 · " +
+                            "squads ${validationSummary.squadCounts.values.sum()}",
+                    )
                     OutlinedButton(onClick = {
                         val bundle = captureLabFiles.createExportBundle()
                         if (bundle == null) {
@@ -330,8 +361,8 @@ private fun RuntimeCard(status: RadarStatus) = SettingsCard("Состояние"
     Text("Кадры: ${status.framesAnalyzed} · очередь: ${status.framesDropped} · rate-limit: ${status.framesThrottled}")
     Text("Найдено: ${status.ralliesSeen} · eligible: ${status.eligible} · уведомлений: ${status.alertsEmitted}")
     Text("Non-target: ${status.nonTarget} · full: ${status.full} · unknown: ${status.unknown}")
-    Text("Shadow: ${status.shadowSelections} · пропущено policy: ${status.policySkipped} · safety rejects: ${status.safetyRejects}")
-    Text("Попытки: ${status.attempts} · успешно: ${status.successes} · неуспешно: ${status.failures}")
+    Text("Shadow would-attempt: ${status.shadowWouldAttempts} · пропущено policy: ${status.policySkipped} · safety rejects: ${status.safetyRejects}")
+    Text("Реальные попытки: ${status.actualAttempts} · успешно: ${status.actualSuccesses} · неуспешно: ${status.actualFailures}")
     Text("Full before join: ${status.fullBeforeJoin} · no squad: ${status.noSquad} · too late: ${status.tooLate}")
     Text("Vision reject: ${status.visionRejects} · safety abort: ${status.safetyAborts}")
     Text(
@@ -399,7 +430,13 @@ private fun HistoryView(
             OutlinedButton(onClick = { onSelect(session.id) }, modifier = Modifier.fillMaxWidth()) {
                 Text(
                     "${session.mode} · ${session.framesAnalyzed} кадров · " +
-                        "eligible ${session.eligible} · attempts ${session.attempts}",
+                        if (session.mode == RuntimeMode.SHADOW_AUTO.name) {
+                            "${session.mode} · ${session.framesAnalyzed} кадров · eligible ${session.eligible} · " +
+                                "would-attempt ${session.shadowWouldAttempts}"
+                        } else {
+                            "${session.mode} · ${session.framesAnalyzed} кадров · eligible ${session.eligible} · " +
+                                "real attempts ${session.actualAttempts} · success ${session.actualSuccesses}"
+                        },
                 )
             }
         }

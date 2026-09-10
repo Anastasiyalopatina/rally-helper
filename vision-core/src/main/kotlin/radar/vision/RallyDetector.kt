@@ -60,7 +60,7 @@ class RallyDetector(
                 screenConfidence = confidence,
                 rallies = detectCards(image).mapIndexed { index, card ->
                     analyzeCard(image, card, index, monotonicMs, diagnostics)
-                },
+                }.filter(::hasStructuralCardEvidence),
                 diagnostics = diagnostics,
             )
             ScreenState.MARCH_SCREEN -> FrameAnalysis(
@@ -86,9 +86,15 @@ class RallyDetector(
         }
     }
 
+    private fun hasStructuralCardEvidence(candidate: RallyCandidate): Boolean =
+        candidate.bossType != BossType.UNKNOWN ||
+            candidate.level != null ||
+            (candidate.participantCount != null && candidate.capacity != null) ||
+            candidate.confidences.plus >= profile.classifierThresholds.absoluteConfidence
+
     private fun detectCards(image: ArgbImage): List<NormalizedRect> {
         val height = profile.firstCard.height
-        val result = mutableListOf<NormalizedRect>()
+        val lattice = mutableListOf<ScoredCardCandidate>()
         var latticeTop = profile.firstCard.top
         while (latticeTop + height <= profile.cardScan.bottom + 0.001) {
             val card = NormalizedRect(profile.firstCard.left, latticeTop, profile.firstCard.right, latticeTop + height)
@@ -97,39 +103,40 @@ class RallyDetector(
                 image, card.local(NormalizedRect(0.38, 0.10, 0.96, 0.52)),
                 predicate = { luminance(it) < 105 },
             )
-            if (artworkBlue >= 0.16 && contentInk >= 0.09) result += card
+            if (artworkBlue >= 0.16 && contentInk >= 0.09) {
+                lattice += ScoredCardCandidate(card, artworkBlue * 0.65 + contentInk * 0.35, CardCandidateSource.LATTICE)
+            }
             latticeTop += height * 0.94
         }
-        if (result.isNotEmpty()) return result
+        if (lattice.none { it.bounds.intersectionOverUnion(profile.firstCard) >= 0.90 }) {
+            val referenceArtwork = colorRatio(
+                image,
+                profile.firstCard.local(profile.cardArtworkLocal),
+                predicate = ::isArtworkBlue,
+            )
+            if (referenceArtwork >= 0.12) {
+                lattice += ScoredCardCandidate(profile.firstCard, referenceArtwork, CardCandidateSource.LATTICE)
+            }
+        }
 
-        val referenceCard = profile.firstCard
-        val referenceArtwork = colorRatio(
-            image,
-            referenceCard.local(profile.cardArtworkLocal),
-            predicate = ::isArtworkBlue,
-        )
-        if (referenceArtwork >= 0.12) return listOf(referenceCard)
-
-        // Scroll/viewport fallback: scan real artwork/content evidence instead of assuming the first-card Y.
+        // Always scan as well: a visible lattice card must not hide a shifted or partially-scrolled card.
         val scanStep = height / 18.0
-        val scored = mutableListOf<Pair<Double, NormalizedRect>>()
+        val scan = mutableListOf<ScoredCardCandidate>()
         var top = profile.cardScan.top
-        while (top + height <= profile.cardScan.bottom + 0.001) {
+        val lastTop = minOf(1.0 - height, profile.cardScan.bottom - height * MIN_VISIBLE_CARD_FRACTION)
+        while (top <= lastTop + 0.001) {
             val card = NormalizedRect(profile.firstCard.left, top, profile.firstCard.right, top + height)
             val artworkBlue = colorRatio(image, card.local(profile.cardArtworkLocal), predicate = ::isArtworkBlue)
             val contentInk = colorRatio(
                 image, card.local(NormalizedRect(0.38, 0.10, 0.96, 0.52)),
                 predicate = { luminance(it) < 105 },
             )
-            if (artworkBlue >= 0.13 && contentInk >= 0.075) {
-                scored += artworkBlue * 0.65 + contentInk * 0.35 to card
+            if (artworkBlue >= 0.16 && contentInk >= 0.09) {
+                scan += ScoredCardCandidate(card, artworkBlue * 0.65 + contentInk * 0.35, CardCandidateSource.FREE_SCAN)
             }
             top += scanStep
         }
-        scored.sortedByDescending { it.first }.forEach { (_, candidate) ->
-            if (result.none { kotlin.math.abs(it.top - candidate.top) < height * 0.58 }) result += candidate
-        }
-        return result.sortedBy { it.top }
+        return mergeCardCandidates(lattice + scan, height)
     }
 
     private fun analyzeCard(
@@ -300,3 +307,35 @@ class RallyDetector(
         return b >= 125 && g >= 115 && b > r * 1.05 && g > r * 1.04
     }
 }
+
+enum class CardCandidateSource { LATTICE, FREE_SCAN }
+
+data class ScoredCardCandidate(
+    val bounds: NormalizedRect,
+    val score: Double,
+    val source: CardCandidateSource,
+)
+
+/** Score-first NMS shared by the calibrated lattice and the scroll-tolerant free scan. */
+fun mergeCardCandidates(
+    candidates: List<ScoredCardCandidate>,
+    expectedHeight: Double,
+): List<NormalizedRect> {
+    val kept = mutableListOf<ScoredCardCandidate>()
+    candidates.sortedWith(
+        compareByDescending<ScoredCardCandidate> {
+            it.score + if (it.source == CardCandidateSource.LATTICE) 0.10 else 0.0
+        }
+            .thenByDescending { it.source == CardCandidateSource.LATTICE }
+            .thenBy { it.bounds.top },
+    ).forEach { candidate ->
+        val duplicate = kept.any { selected ->
+            candidate.bounds.intersectionOverUnion(selected.bounds) >= 0.48 ||
+                abs(candidate.bounds.center.y - selected.bounds.center.y) < expectedHeight * 0.38
+        }
+        if (!duplicate) kept += candidate
+    }
+    return kept.map { it.bounds }.sortedBy { it.top }
+}
+
+private const val MIN_VISIBLE_CARD_FRACTION = 0.55

@@ -55,6 +55,39 @@ class RadarMigrationTest {
         }
     }
 
+    @Test
+    fun migrate3To4_splitsShadowAndActualCounters() {
+        helper.createDatabase("migration-3-4", 3).use { db ->
+            insertRecords(db, "old-v3", version = 3)
+            db.execSQL("UPDATE RadarSession SET mode = 'SHADOW_AUTO', attempts = 7, successes = 0, failures = 0 WHERE id = 1")
+        }
+        helper.runMigrationsAndValidate("migration-3-4", 4, true, RadarRepository.MIGRATION_3_4).use { db ->
+            assertPreserved(db, "old-v3")
+            db.query(
+                "SELECT shadowWouldAttempts, actualAttempts, actualSuccesses, actualFailures FROM RadarSession WHERE id = 1",
+            ).use { cursor ->
+                check(cursor.moveToFirst())
+                assertEquals(7L, cursor.getLong(0))
+                assertEquals(0L, cursor.getLong(1))
+                assertEquals(0L, cursor.getLong(2))
+                assertEquals(0L, cursor.getLong(3))
+            }
+        }
+    }
+
+    @Test
+    fun migrate1To4_preservesExistingRecords() {
+        createV1("migration-1-4")
+        helper.runMigrationsAndValidate(
+            "migration-1-4",
+            4,
+            true,
+            RadarRepository.MIGRATION_1_2,
+            RadarRepository.MIGRATION_2_3,
+            RadarRepository.MIGRATION_3_4,
+        ).use { db -> assertPreserved(db, "old-v1") }
+    }
+
     private fun createV1(name: String) {
         helper.createDatabase(name, 1).use { db -> insertRecords(db, "old-v1", version = 1) }
     }

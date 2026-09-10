@@ -26,10 +26,11 @@ class RadarRepository private constructor(private val database: RadarDatabase) {
             System.currentTimeMillis(),
             summary.framesAnalyzed,
             summary.eligible,
-            summary.attempts,
-            summary.successes,
-            summary.failures,
             summary.policySkipped,
+            summary.shadowWouldAttempts,
+            summary.actualAttempts,
+            summary.actualSuccesses,
+            summary.actualFailures,
         )
     }
 
@@ -88,7 +89,7 @@ class RadarRepository private constructor(private val database: RadarDatabase) {
     companion object {
         fun create(context: Context): RadarRepository = RadarRepository(
             Room.databaseBuilder(context, RadarDatabase::class.java, "radar.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build(),
         )
 
@@ -117,6 +118,21 @@ class RadarRepository private constructor(private val database: RadarDatabase) {
                 database.execSQL("ALTER TABLE RallyObservation ADD COLUMN firstSeenMonotonicMs INTEGER NOT NULL DEFAULT 0")
                 database.execSQL("ALTER TABLE RallyObservation ADD COLUMN joinedState TEXT NOT NULL DEFAULT 'UNKNOWN'")
                 database.execSQL("ALTER TABLE RallyObservation ADD COLUMN eventType TEXT NOT NULL DEFAULT 'OBSERVED'")
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE RadarSession ADD COLUMN shadowWouldAttempts INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE RadarSession ADD COLUMN actualAttempts INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE RadarSession ADD COLUMN actualSuccesses INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE RadarSession ADD COLUMN actualFailures INTEGER NOT NULL DEFAULT 0")
+                database.execSQL(
+                    "UPDATE RadarSession SET " +
+                        "shadowWouldAttempts = CASE WHEN mode = 'SHADOW_AUTO' THEN attempts ELSE 0 END, " +
+                        "actualAttempts = CASE WHEN mode = 'SHADOW_AUTO' THEN 0 ELSE attempts END, " +
+                        "actualSuccesses = successes, actualFailures = failures",
+                )
             }
         }
     }

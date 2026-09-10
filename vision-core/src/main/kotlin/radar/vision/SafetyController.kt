@@ -10,8 +10,7 @@ data class SafetyPolicy(
     val minBossConfidence: Float = 0.70f,
     val minLevelConfidence: Float = 0.62f,
     val minPlusConfidence: Float = 0.55f,
-    val maxTravelSeconds: Int = 60,
-    val minimumFreeSlots: Int = 1,
+    val maxTravelSeconds: Int? = null,
     val safetyMarginSeconds: Int = 3,
 )
 
@@ -37,7 +36,7 @@ class SafetyController(private val policy: SafetyPolicy = SafetyPolicy()) {
                 rally.confidences.boss < policy.minBossConfidence -> "boss confidence too low"
                 rally.level == null || rally.confidences.level < policy.minLevelConfidence -> "level unknown"
                 rally.participantCount == null || rally.capacity == null -> "participant capacity unknown"
-                rally.capacity - rally.participantCount < policy.minimumFreeSlots -> "not enough free slots"
+                rally.capacity - rally.participantCount < 1 -> "no free slots"
                 rally.joinedState != JoinedState.JOINABLE -> "rally not joinable"
                 rally.joinPlusBounds.isEmpty() || rally.confidences.plus < policy.minPlusConfidence -> "plus unknown"
                 else -> null
@@ -59,7 +58,7 @@ class SafetyController(private val policy: SafetyPolicy = SafetyPolicy()) {
     fun canSend(travelTimeSeconds: Int?, estimatedRallyRemainingSeconds: Int?): Boolean {
         if (travelTimeSeconds == null || estimatedRallyRemainingSeconds == null) return false
         if (travelTimeSeconds < 0 || estimatedRallyRemainingSeconds < 0) return false
-        return travelTimeSeconds <= policy.maxTravelSeconds &&
+        return (policy.maxTravelSeconds == null || travelTimeSeconds <= policy.maxTravelSeconds) &&
             travelTimeSeconds + policy.safetyMarginSeconds < estimatedRallyRemainingSeconds
     }
 }

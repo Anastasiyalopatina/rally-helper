@@ -26,7 +26,6 @@ data class RadarSettings(
     val delayMaxSeconds: Int = 0,
     val skipMin: Int = 0,
     val skipMax: Int = 0,
-    val minimumFreeSlots: Int = 1,
     val safetyMarginSeconds: Int = 3,
     val calibrationProfile: String = "reference-1280x2800-v2",
     val captureLabArmed: Boolean = false,
@@ -49,7 +48,6 @@ class RadarSettingsStore(private val context: Context) {
             delayMaxSeconds = (values[Keys.DELAY_MAX] ?: 0).coerceIn(0, MAX_DELAY_SECONDS),
             skipMin = (values[Keys.SKIP_MIN] ?: 0).coerceIn(0, MAX_SKIP),
             skipMax = (values[Keys.SKIP_MAX] ?: 0).coerceIn(0, MAX_SKIP),
-            minimumFreeSlots = (values[Keys.MINIMUM_FREE_SLOTS] ?: 1).coerceAtLeast(1),
             safetyMarginSeconds = (values[Keys.SAFETY_MARGIN] ?: 3).coerceIn(0, MAX_SAFETY_MARGIN_SECONDS),
             calibrationProfile = values[Keys.CALIBRATION] ?: "reference-1280x2800-v2",
             captureLabArmed = values[Keys.CAPTURE_LAB_ARMED] ?: false,
@@ -101,10 +99,6 @@ class RadarSettingsStore(private val context: Context) {
         }
     }
 
-    suspend fun setMinimumFreeSlots(value: Int) {
-        context.radarDataStore.edit { it[Keys.MINIMUM_FREE_SLOTS] = value.coerceAtLeast(1) }
-    }
-
     suspend fun setSafetyMarginSeconds(value: Int) {
         context.radarDataStore.edit { it[Keys.SAFETY_MARGIN] = value.coerceIn(0, MAX_SAFETY_MARGIN_SECONDS) }
     }
@@ -125,14 +119,13 @@ class RadarSettingsStore(private val context: Context) {
         val DELAY_MAX = intPreferencesKey("auto_delay_max_seconds")
         val SKIP_MIN = intPreferencesKey("auto_skip_min")
         val SKIP_MAX = intPreferencesKey("auto_skip_max")
-        val MINIMUM_FREE_SLOTS = intPreferencesKey("minimum_free_slots")
         val SAFETY_MARGIN = intPreferencesKey("safety_margin_seconds")
         val CALIBRATION = stringPreferencesKey("calibration_profile")
         val CAPTURE_LAB_ARMED = booleanPreferencesKey("capture_lab_armed")
     }
 
     companion object {
-        const val MAX_DELAY_SECONDS = 120
+        const val MAX_DELAY_SECONDS = 30
         const val MAX_SKIP = 20
         const val MAX_SAFETY_MARGIN_SECONDS = 60
     }
@@ -148,7 +141,6 @@ private fun RadarSettings.normalized(): RadarSettings {
         delayMaxSeconds = delayMaxSeconds.coerceIn(minDelay, RadarSettingsStore.MAX_DELAY_SECONDS),
         skipMin = minSkip,
         skipMax = skipMax.coerceIn(minSkip, RadarSettingsStore.MAX_SKIP),
-        minimumFreeSlots = minimumFreeSlots.coerceAtLeast(1),
         safetyMarginSeconds = safetyMarginSeconds.coerceIn(0, RadarSettingsStore.MAX_SAFETY_MARGIN_SECONDS),
     )
 }

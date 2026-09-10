@@ -7,6 +7,7 @@ import radar.vision.AutoPolicy
 import radar.vision.AutoPolicyConfig
 import radar.vision.AutoPolicyDecision
 import radar.vision.BossType
+import radar.vision.CardCandidateSource
 import radar.vision.FrameAnalysis
 import radar.vision.JoinedState
 import radar.vision.NormalizedRect
@@ -14,6 +15,9 @@ import radar.vision.RallyCandidate
 import radar.vision.RallyConfidences
 import radar.vision.RallyId
 import radar.vision.RallyTracker
+import radar.vision.OneTapRequest
+import radar.vision.OneTapRequestGuard
+import radar.vision.ScoredCardCandidate
 import radar.vision.ScreenState
 import radar.vision.DecisionKind
 import radar.vision.RuntimeMode
@@ -24,6 +28,7 @@ import radar.vision.ShadowAutoCoordinator
 import radar.vision.ShadowAutoPhase
 import radar.vision.TargetSelector
 import radar.vision.TransitionResult
+import radar.vision.mergeCardCandidates
 import kotlin.random.Random
 
 fun main() {
@@ -63,13 +68,49 @@ fun main() {
         SafetyController(SafetyPolicy(targetLevels = emptySet()))
             .decide(RuntimeMode.SHADOW_AUTO, secondFrame, currentTracking).single().kind == DecisionKind.REJECT,
     ) { "An empty target policy must select nothing" }
+    check(SafetyController().decide(RuntimeMode.RADAR, secondFrame, currentTracking).single().kind == DecisionKind.WOULD_SELECT) {
+        "One free slot is sufficient"
+    }
+    val fullFrame = secondFrame.copy(rallies = listOf(candidate(upper, 5, 49)))
+    val fullTrack = second.copy(candidate = candidate(upper, 5, 49), lastSeenFrameId = fullFrame.frameId)
     check(
-        SafetyController(SafetyPolicy(minimumFreeSlots = 4))
-            .decide(RuntimeMode.RADAR, secondFrame, currentTracking).single().kind == DecisionKind.REJECT,
-    ) { "Free-slot policy must be applied even in RADAR mode" }
+        SafetyController().decide(RuntimeMode.RADAR, fullFrame, radar.vision.TrackingUpdate(listOf(fullTrack), emptyList()))
+            .single().kind == DecisionKind.REJECT,
+    ) { "A full rally must be rejected" }
     check(SafetyController(SafetyPolicy(safetyMarginSeconds = 3)).canSend(7, 11))
     check(!SafetyController(SafetyPolicy(safetyMarginSeconds = 3)).canSend(7, 10))
+    check(SafetyController(SafetyPolicy(safetyMarginSeconds = 3)).canSend(75, 100)) {
+        "Travel time must not have an arbitrary 60-second ceiling"
+    }
     check(!SafetyController().canSend(null, 40))
+
+    val cardHeight = 0.225
+    fun scored(top: Double, score: Double, source: CardCandidateSource) = ScoredCardCandidate(
+        NormalizedRect(0.02, top, 0.98, top + cardHeight), score, source,
+    )
+    val standard = mergeCardCandidates(
+        listOf(scored(.15, .90, CardCandidateSource.LATTICE), scored(.151, .94, CardCandidateSource.FREE_SCAN)),
+        cardHeight,
+    )
+    check(standard.size == 1 && kotlin.math.abs(standard.single().top - .15) < .001)
+    val shifted = mergeCardCandidates(listOf(scored(.205, .88, CardCandidateSource.FREE_SCAN)), cardHeight)
+    check(shifted.single().top == .205)
+    val mixed = mergeCardCandidates(
+        listOf(
+            scored(.15, .90, CardCandidateSource.LATTICE),
+            scored(.151, .93, CardCandidateSource.FREE_SCAN),
+            scored(.455, .87, CardCandidateSource.FREE_SCAN),
+        ),
+        cardHeight,
+    )
+    check(mixed.size == 2 && mixed[1].top == .455) { "Lattice and shifted scan cards must be combined" }
+    val partialBoundary = mergeCardCandidates(listOf(scored(.74, .83, CardCandidateSource.FREE_SCAN)), cardHeight)
+    check(partialBoundary.single().bottom < 1.0) { "A partial-scroll candidate near the scan boundary must survive" }
+    val scrolled = mergeCardCandidates(
+        listOf(scored(.22, .82, CardCandidateSource.FREE_SCAN), scored(.48, .84, CardCandidateSource.FREE_SCAN)),
+        cardHeight,
+    )
+    check(scrolled.map { it.top } == listOf(.22, .48))
 
     val outOfPolicyTracker = RallyTracker()
     outOfPolicyTracker.update(frame(20, listOf(candidate(upper, 1, 30, BossType.UNKNOWN, 14))))
@@ -91,6 +132,9 @@ fun main() {
 
     val replacement = tracker.update(frame(4, listOf(candidate(upper, 1, 46)))).active.single { it.presentInCurrentFrame }
     check(replacement.id != first.id) { "A new card at the same Y must not reuse a disappeared track" }
+    check(
+        OneTapRequestGuard.resolve(OneTapRequest(first.id, 2), 4, radar.vision.TrackingUpdate(listOf(replacement), emptyList())) == null,
+    ) { "A stale tap for A must not resolve to B at the same coordinates" }
 
     val reorderTracker = RallyTracker()
     val initial = reorderTracker.update(
@@ -206,6 +250,7 @@ fun main() {
     println(
         "PASS stale-track action guard; PASS duplicate/reorder identity; " +
             "PASS alert/action policy split; PASS deterministic single-flight shadow coordinator; " +
-            "PASS out-of-policy/free-slot/travel guards; PASS explicit transitions/pause/flow-id guard",
+            "PASS combined card NMS/shift/partial/scroll; PASS out-of-policy/free-slot/travel guards; " +
+            "PASS explicit transitions/pause/stale-rally-id guard",
     )
 }

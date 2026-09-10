@@ -11,7 +11,7 @@ The following items require a connected physical Android device and must not be 
 - recorded multi-card, reorder, scroll and refresh sequences.
 - a live signal that distinguishes already-joined from other no-plus states;
 - labelled squad states beyond the existing unknown-only observations;
-- labelled travel times at approximately 3, 7, 12, 20+ and 60+ seconds;
+- at least five distinct labelled travel times, including one above 60 seconds;
 - redirect capability for a returning squad;
 - overlay behavior across additional vendor permission/lifecycle variants;
 - a controlled Capture Lab OFF versus ARMED CPU, RSS and latency benchmark;

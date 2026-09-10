@@ -17,8 +17,12 @@ PAUSE cancels pending automation and requires a fresh frame after RESUME; it doe
 
 Pending cancellation (disappearance, pause or leaving an auto mode) clears only that rally's sampled delay and is not a completed attempt; the current skip K is retained. A delay/skip settings change cancels pending work and deliberately starts a new policy cycle under the new ranges. A new MediaProjection session resets all policy state. Entering AUTO/SHADOW after another mode requires a fresh analyzed frame.
 
-Room v3 stores session aggregates and meaningful state transitions. Capture Lab defaults to OFF; only ARMED mode creates downscaled JPEG frames for its five-second ring. Labelled ZIP/JSON archives stay in private app storage until the user explicitly exports them through Android's system file picker.
+Room v4 stores session aggregates and meaningful state transitions. Shadow `would-attempt` counters are separate from real attempts, successes and failures. Capture Lab defaults to OFF; only ARMED mode creates downscaled JPEG frames in a bounded ring. `MARK SCENARIO` writes an approximately three-second pre-roll plus three-second post-roll with a TUNING/HOLDOUT split, build/runtime metadata, geometry, confidences, tracks and decisions. Labelled ZIP/JSON archives stay in private app storage until the user explicitly exports them through Android's system file picker.
 
-The optional compact overlay is a touchable `TYPE_APPLICATION_OVERLAY`, constrained to a safe left strip. Its known bounds are masked before CV analysis. RADAR continues normally when overlay permission or the setting is absent.
+The optional compact overlay is a touchable `TYPE_APPLICATION_OVERLAY`. It can be dragged by its heading across the display while buttons remain independently clickable. Its default placement is below the populated event-card region, its known bounds are masked before CV analysis, and analysis fails closed with a placement warning if it overlaps a critical CV region. RADAR continues normally when overlay permission or the setting is absent.
+
+Card discovery always combines calibrated-lattice and scroll-tolerant free-scan candidates, then applies score-first non-maximum suppression and structural-evidence filtering. A visible lattice card can therefore coexist with a shifted card without producing duplicate tracks.
+
+Travel time has no arbitrary maximum. Sending remains fail-closed unless both travel and remaining time are known and `travel + safety margin < remaining`. Capacity is fixed to the product rule that one available place is sufficient.
 
 Calibration screenshots are local-only. The APK contains a compact, versioned feature asset and an automated build assertion rejects raw image assets.

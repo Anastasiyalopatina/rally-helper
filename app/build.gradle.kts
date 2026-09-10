@@ -1,5 +1,10 @@
 import java.util.zip.ZipFile
 
+val buildGitSha = providers.exec {
+    commandLine("git", "rev-parse", "HEAD")
+    isIgnoreExitValue = true
+}.standardOutput.asText.map { it.trim().ifEmpty { "unknown" } }
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -17,10 +22,14 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.2.0-radar"
+        buildConfigField("String", "GIT_SHA", "\"${buildGitSha.get()}\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 
     sourceSets {
         getByName("androidTest").assets.srcDir("$projectDir/schemas")

@@ -23,7 +23,9 @@ import android.util.DisplayMetrics
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import com.rallyhelper.MainActivity
+import com.rallyhelper.BuildConfig
 import com.rallyhelper.RadarRuntime
+import com.rallyhelper.RadarStatus
 import com.rallyhelper.RuntimeLifecycle
 import com.rallyhelper.data.DebugCaptureMode
 import com.rallyhelper.data.RadarRepository
@@ -31,6 +33,8 @@ import com.rallyhelper.data.RadarSettings
 import com.rallyhelper.data.RadarSettingsStore
 import com.rallyhelper.debug.DebugCaptureStore
 import com.rallyhelper.debug.CaptureLabLabel
+import com.rallyhelper.debug.CaptureDatasetSplit
+import com.rallyhelper.debug.CaptureLabMetadata
 import com.rallyhelper.debug.CaptureLabStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -112,6 +116,7 @@ class RadarForegroundService : Service() {
     private var sessionId: Long? = null
     private var captureWidth = 0
     private var captureHeight = 0
+    private var captureDensityDpi = 0
     private var lastAbortReason: String? = null
     @Volatile private var automationPaused = false
     @Volatile private var lastAnalyzedFrameId: Long? = null
@@ -147,10 +152,14 @@ class RadarForegroundService : Service() {
                 ?: CaptureLabLabel.UNKNOWN_UI
             val optionalIntValue = intent.getIntExtra(EXTRA_CAPTURE_VALUE, Int.MIN_VALUE)
                 .takeUnless { it == Int.MIN_VALUE }
-            val archive = captureLabStore.save(label, optionalIntValue)
+            val split = intent.getStringExtra(EXTRA_CAPTURE_SPLIT)
+                ?.let { runCatching { CaptureDatasetSplit.valueOf(it) }.getOrNull() }
+                ?: CaptureDatasetSplit.TUNING
+            val marked = captureLabStore.markScenario(label, optionalIntValue, split)
             RadarRuntime.update {
-                it.copy(message = archive?.let { file -> "Capture Lab сохранён локально: ${file.name}" }
-                    ?: "Capture Lab: буфер пока пуст")
+                it.copy(message = if (marked) {
+                    "MARK SCENARIO: 3 сек до + 3 сек после · ${label.name} · ${split.name}"
+                } else "Capture Lab: буфер пуст или уже идёт запись сценария")
             }
             return START_NOT_STICKY
         }
@@ -201,7 +210,9 @@ class RadarForegroundService : Service() {
             overlay.update(
                 updated.mode,
                 null,
-                OverlayCounters(current.successes, current.failures, current.policySkipped, current.shadowSelections),
+                null,
+                null,
+                current.toOverlayCounters(),
             )
         } else if (!previous.mode.isAutoLoop() && updated.mode.isAutoLoop()) {
             shadowCoordinator.resume(lastAnalyzedFrameId)
@@ -262,7 +273,9 @@ class RadarForegroundService : Service() {
         overlay.update(
             current.mode,
             null,
-            OverlayCounters(current.successes, current.failures, current.policySkipped, current.shadowSelections),
+            null,
+            null,
+            current.toOverlayCounters(),
             OverlayAutomationState(value, current.shadowPhase, null),
         )
         getSystemService(NotificationManager::class.java).notify(
@@ -323,6 +336,7 @@ class RadarForegroundService : Service() {
         }
         captureWidth = metrics.widthPixels
         captureHeight = metrics.heightPixels
+        captureDensityDpi = metrics.densityDpi
         sessionId = runBlocking(Dispatchers.IO) {
             repository.beginSession(settings.get().calibrationProfile, settings.get().mode)
         }
@@ -355,6 +369,7 @@ class RadarForegroundService : Service() {
         }
         captureWidth = width
         captureHeight = height
+        captureDensityDpi = resources.displayMetrics.densityDpi
         capture?.resize(width, height, resources.displayMetrics.densityDpi)
         RadarRuntime.update { it.copy(message = "Capture resized · ${width}×$height") }
     }
@@ -400,18 +415,31 @@ class RadarForegroundService : Service() {
                     }
                     val currentSettings = settings.get()
                     val argbImage = frameBuffer.copyFrom(image)
-                    overlay.boundsNormalized(image.width, image.height)?.let(argbImage::mask)
+                    val overlayBounds = overlay.boundsNormalized(image.width, image.height)
+                    if (
+                        overlayBounds != null &&
+                        OverlayCvSafety.overlapsCritical(overlayBounds, RadarRuntime.status.value.screen)
+                    ) {
+                        recordAbortOnce("overlay-overlaps-critical-cv-region")
+                        RadarRuntime.update {
+                            it.copy(message = "Переместите overlay в свободную нижнюю область: он перекрывает анализ")
+                        }
+                        continue
+                    }
+                    overlayBounds?.let(argbImage::mask)
                     val observedMs = android.os.SystemClock.elapsedRealtime()
                     val analysis = detector.analyze(argbImage, frameIds.incrementAndGet(), observedMs)
                     lastAnalyzedFrameId = analysis.frameId
                     if (analysis.screen == ScreenState.UNKNOWN) recordAbortOnce("screen:UNKNOWN") else lastAbortReason = null
                     val tracking = tracker.update(analysis)
+                    val visibleNow = tracking.active.filter {
+                        it.presentInCurrentFrame && it.lastSeenFrameId == analysis.frameId
+                    }
                     val activeNow = tracking.active.filter { it.stable && it.presentInCurrentFrame && it.lastSeenFrameId == analysis.frameId }
                     activeNow.forEach { seenRallies += it.id.value }
                     val safety = SafetyController(
                         SafetyPolicy(
                             targetLevels = currentSettings.selectedLevels,
-                            minimumFreeSlots = currentSettings.minimumFreeSlots,
                             safetyMarginSeconds = currentSettings.safetyMarginSeconds,
                         ),
                     )
@@ -419,14 +447,13 @@ class RadarForegroundService : Service() {
                     val alertDecisions = RadarAlertPolicy(
                         SafetyPolicy(
                             targetLevels = currentSettings.selectedLevels,
-                            minimumFreeSlots = currentSettings.minimumFreeSlots,
                             safetyMarginSeconds = currentSettings.safetyMarginSeconds,
                         ),
                     ).decide(analysis, tracking)
                     val decisions = if (currentSettings.mode == RuntimeMode.RADAR) alertDecisions else actionDecisions
-                    val activeNowIds = activeNow.mapTo(hashSetOf()) { it.id }
-                    val currentRadarDecisions = alertDecisions.filter { it.rallyId == null || it.rallyId in activeNowIds }
-                    val currentActionDecisions = actionDecisions.filter { it.rallyId == null || it.rallyId in activeNowIds }
+                    val visibleNowIds = visibleNow.mapTo(hashSetOf()) { it.id }
+                    val currentRadarDecisions = alertDecisions.filter { it.rallyId == null || it.rallyId in visibleNowIds }
+                    val currentActionDecisions = actionDecisions.filter { it.rallyId == null || it.rallyId in visibleNowIds }
                     val decisionById = decisions.mapNotNull { decision -> decision.rallyId?.value?.let { it to decision } }.toMap()
                     activeNow.forEach { track ->
                         val id = track.id.value
@@ -460,9 +487,27 @@ class RadarForegroundService : Service() {
                                 mode = currentSettings.mode,
                                 radarDecisions = currentRadarDecisions,
                                 actionDecisions = currentActionDecisions,
-                                currentTracks = activeNow,
+                                currentTracks = visibleNow,
                                 shadowUpdate = shadowUpdate,
                                 actualAlertEmitted = newlyAlerted.isNotEmpty(),
+                                metadata = CaptureLabMetadata(
+                                    appVersion = BuildConfig.VERSION_NAME,
+                                    buildNumber = BuildConfig.VERSION_CODE,
+                                    gitSha = BuildConfig.GIT_SHA,
+                                    calibrationProfileId = currentSettings.calibrationProfile,
+                                    captureWidth = captureWidth,
+                                    captureHeight = captureHeight,
+                                    densityDpi = captureDensityDpi,
+                                    selectedLevels = currentSettings.selectedLevels,
+                                    mode = currentSettings.mode,
+                                    delayMinSeconds = currentSettings.delayMinSeconds,
+                                    delayMaxSeconds = currentSettings.delayMaxSeconds,
+                                    skipMin = currentSettings.skipMin,
+                                    skipMax = currentSettings.skipMax,
+                                    safetyMarginSeconds = currentSettings.safetyMarginSeconds,
+                                    detectorVersion = "c3-card-fusion-v1",
+                                    templateVersion = "runtime-template-v2",
+                                ),
                             )
                             small.recycle()
                         }
@@ -477,10 +522,10 @@ class RadarForegroundService : Service() {
                     }?.toInt()
                     overlay.update(
                         currentSettings.mode,
+                        overlayRallyId,
+                        analysis.frameId,
                         overlayRally,
-                        OverlayCounters(
-                            realSuccess = RadarRuntime.status.value.successes,
-                            realFailed = RadarRuntime.status.value.failures,
+                        RadarRuntime.status.value.toOverlayCounters(
                             skipped = shadowUpdate.policySkips.toLong(),
                             shadowWouldAttempt = shadowUpdate.virtualAttempts.toLong(),
                         ),
@@ -527,7 +572,7 @@ class RadarForegroundService : Service() {
                             policySkipped = shadowUpdate.policySkips.toLong(),
                             shadowPhase = shadowUpdate.phase.name,
                             shadowDelayRemainingSeconds = delayRemaining,
-                            attempts = shadowUpdate.virtualAttempts.toLong(),
+                            shadowWouldAttempts = shadowUpdate.virtualAttempts.toLong(),
                             safetyRejects = safetyRejectCount,
                             visionRejects = visionRejectCount,
                             safetyAborts = safetyAbortCount,
@@ -651,8 +696,8 @@ class RadarForegroundService : Service() {
         )
     }
 
-    private fun handleJoinRequested() {
-        recordAbortOnce("join-flow-locked:device-validation-required")
+    private fun handleJoinRequested(rallyId: radar.vision.RallyId) {
+        recordAbortOnce("join-flow-locked:device-validation-required:${rallyId.value}")
         RadarRuntime.update {
             it.copy(message = "JoinFlow заблокирован: сначала завершите RADAR/SHADOW device validation")
         }
@@ -772,6 +817,7 @@ class RadarForegroundService : Service() {
         private const val EXTRA_RESULT_DATA = "result_data"
         private const val EXTRA_CAPTURE_LABEL = "capture_label"
         private const val EXTRA_CAPTURE_VALUE = "capture_value"
+        private const val EXTRA_CAPTURE_SPLIT = "capture_split"
         private const val CHANNEL_ID = "radar"
         private const val NOTIFICATION_ID = 42
 
@@ -781,14 +827,34 @@ class RadarForegroundService : Service() {
 
         fun stopIntent(context: Context) = Intent(context, RadarForegroundService::class.java).setAction(ACTION_STOP)
 
-        fun captureLabIntent(context: Context, label: CaptureLabLabel, optionalIntValue: Int?) =
+        fun captureLabIntent(
+            context: Context,
+            label: CaptureLabLabel,
+            optionalIntValue: Int?,
+            split: CaptureDatasetSplit,
+        ) =
             Intent(context, RadarForegroundService::class.java).setAction(ACTION_CAPTURE_LAB)
                 .putExtra(EXTRA_CAPTURE_LABEL, label.name)
+                .putExtra(EXTRA_CAPTURE_SPLIT, split.name)
                 .apply { optionalIntValue?.let { putExtra(EXTRA_CAPTURE_VALUE, it) } }
     }
 }
 
 private fun RuntimeMode.isAutoLoop(): Boolean = this == RuntimeMode.AUTO || this == RuntimeMode.SHADOW_AUTO
+
+private fun RadarStatus.toOverlayCounters(
+    skipped: Long = policySkipped,
+    shadowWouldAttempt: Long = shadowSelections,
+) = OverlayCounters(
+    totalSeen = ralliesSeen,
+    eligible = eligible,
+    realSuccess = actualSuccesses,
+    realFailed = actualFailures,
+    skipped = skipped,
+    shadowWouldAttempt = shadowWouldAttempt,
+    ignored = (ralliesSeen - eligible).coerceAtLeast(0),
+    missed = tooLate + fullBeforeJoin,
+)
 
 private fun List<Long>.percentile(fraction: Double): Long? {
     if (isEmpty()) return null

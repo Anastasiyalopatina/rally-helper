@@ -22,6 +22,10 @@ import kotlinx.coroutines.flow.Flow
     @ColumnInfo(defaultValue = "0") val successes: Long = 0,
     @ColumnInfo(defaultValue = "0") val failures: Long = 0,
     @ColumnInfo(defaultValue = "0") val policySkipped: Long = 0,
+    @ColumnInfo(defaultValue = "0") val shadowWouldAttempts: Long = 0,
+    @ColumnInfo(defaultValue = "0") val actualAttempts: Long = 0,
+    @ColumnInfo(defaultValue = "0") val actualSuccesses: Long = 0,
+    @ColumnInfo(defaultValue = "0") val actualFailures: Long = 0,
 )
 
 @Entity data class RallyObservation(
@@ -70,18 +74,20 @@ import kotlinx.coroutines.flow.Flow
     @Insert suspend fun insertAbort(value: SafetyAbort): Long
     @Query(
         "UPDATE RadarSession SET endedAtEpochMs = :endedAtEpochMs, framesAnalyzed = :frames, " +
-            "eligible = :eligible, attempts = :attempts, successes = :successes, failures = :failures, " +
-            "policySkipped = :skipped WHERE id = :sessionId",
+            "eligible = :eligible, policySkipped = :skipped, shadowWouldAttempts = :shadowWouldAttempts, " +
+            "actualAttempts = :actualAttempts, actualSuccesses = :actualSuccesses, " +
+            "actualFailures = :actualFailures WHERE id = :sessionId",
     )
     suspend fun endSession(
         sessionId: Long,
         endedAtEpochMs: Long,
         frames: Long,
         eligible: Long,
-        attempts: Long,
-        successes: Long,
-        failures: Long,
         skipped: Long,
+        shadowWouldAttempts: Long,
+        actualAttempts: Long,
+        actualSuccesses: Long,
+        actualFailures: Long,
     )
     @Query("SELECT * FROM RadarSession ORDER BY startedAtEpochMs DESC LIMIT :limit")
     fun observeRecentSessions(limit: Int = 25): Flow<List<RadarSession>>
@@ -91,7 +97,7 @@ import kotlinx.coroutines.flow.Flow
 
 @Database(
     entities = [RadarSession::class, RallyObservation::class, DetectorDecisionRecord::class, SafetyAbort::class],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class RadarDatabase : RoomDatabase() {
