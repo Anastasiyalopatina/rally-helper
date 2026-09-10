@@ -130,10 +130,16 @@ fun main() {
             .none { it.kind == DecisionKind.WOULD_SELECT },
     )
 
-    val replacement = tracker.update(frame(4, listOf(candidate(upper, 1, 46)))).active.single { it.presentInCurrentFrame }
+    val afterTransientMiss = tracker.update(frame(4, listOf(candidate(upper, 3, 47)))).active.single { it.presentInCurrentFrame }
+    check(afterTransientMiss.id == first.id) {
+        "A rally must retain identity across one missed detector frame"
+    }
+
+    tracker.update(frame(8, emptyList()))
+    val replacement = tracker.update(frame(9, listOf(candidate(upper, 1, 46)))).active.single { it.presentInCurrentFrame }
     check(replacement.id != first.id) { "A new card at the same Y must not reuse a disappeared track" }
     check(
-        OneTapRequestGuard.resolve(OneTapRequest(first.id, 2), 4, radar.vision.TrackingUpdate(listOf(replacement), emptyList())) == null,
+        OneTapRequestGuard.resolve(OneTapRequest(first.id, 2), 9, radar.vision.TrackingUpdate(listOf(replacement), emptyList())) == null,
     ) { "A stale tap for A must not resolve to B at the same coordinates" }
 
     val reorderTracker = RallyTracker()

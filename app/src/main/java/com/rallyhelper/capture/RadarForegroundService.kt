@@ -852,7 +852,9 @@ private fun RadarStatus.toOverlayCounters(
     realFailed = actualFailures,
     skipped = skipped,
     shadowWouldAttempt = shadowWouldAttempt,
-    ignored = (ralliesSeen - eligible).coerceAtLeast(0),
+    // "Not suitable" is a semantic rejection count, not every rally that was not
+    // eligible. Full/late/skipped rallies are reported by their own counters.
+    ignored = nonTarget + unknown,
     missed = tooLate + fullBeforeJoin,
 )
 

@@ -32,11 +32,16 @@ class RallyTracker(
     @Synchronized
     fun update(frame: FrameAnalysis): TrackingUpdate {
         val now = frame.observedAtMonotonicMs
-        val previousFrameTracks = tracks.values.filter { it.presentInCurrentFrame }
+        val expired = tracks.values.filter { now - it.lastSeenMonotonicMs > expiryMs }.map { it.id }
+        expired.forEach(tracks::remove)
+        // A detector may miss a card for one frame while the list is animating or refreshing.
+        // Keep matching against every non-expired track so that the same visible rally does
+        // not become a new session statistic after each transient miss.
+        val matchableTracks = tracks.values.toList()
         tracks.replaceAll { _, track -> track.copy(presentInCurrentFrame = false) }
         val matched = mutableSetOf<RallyId>()
         frame.rallies.forEach { observation ->
-            val prior = previousFrameTracks
+            val prior = matchableTracks
                 .filter { it.id !in matched }
                 .maxByOrNull { score(it, observation, now) }
                 ?.takeIf { score(it, observation, now) >= 0.54 }
@@ -55,8 +60,6 @@ class RallyTracker(
             )
             matched += id
         }
-        val expired = tracks.values.filter { now - it.lastSeenMonotonicMs > expiryMs }.map { it.id }
-        expired.forEach(tracks::remove)
         return TrackingUpdate(tracks.values.toList(), expired)
     }
 
