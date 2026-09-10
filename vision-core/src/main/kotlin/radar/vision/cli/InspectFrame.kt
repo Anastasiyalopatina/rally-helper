@@ -18,6 +18,10 @@ fun main(args: Array<String>) {
     )
     println("screen=${analysis.screen} confidence=${analysis.screenConfidence}")
     println("rallies=${analysis.rallies.size}")
+    println(
+        "refresh=${analysis.refreshButton.accepted} confidence=${analysis.refreshButton.confidence} " +
+            "bounds=${analysis.refreshButton.value}",
+    )
     analysis.rallies.forEachIndexed { index, rally ->
         println(
             "rally[$index] boss=${rally.bossType} level=${rally.level} " +

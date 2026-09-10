@@ -73,6 +73,7 @@ class RallyDetector(
                 rallies = detectCards(image).mapIndexed { index, card ->
                     analyzeCard(image, card, index, monotonicMs, diagnostics)
                 }.filter(::hasStructuralCardEvidence),
+                refreshButton = detectRefreshButton(image),
                 diagnostics = diagnostics,
             )
             ScreenState.MARCH_SCREEN -> FrameAnalysis(
@@ -318,6 +319,73 @@ class RallyDetector(
             val shape = (1.0 - abs(aspect - expectedNormalizedAspect) / 1.5).coerceIn(0.0, 1.0)
             val size = (count / 120.0).coerceIn(0.0, 1.0)
             result += VisualComponent(count, bounds, centroid, (shape * 0.55 + size * 0.45).toFloat())
+        }
+        return result
+    }
+
+    private fun detectRefreshButton(image: ArgbImage): Recognition<NormalizedRect> {
+        val candidates = refreshOrangeComponents(image, profile.refreshButtonBand).filter { component ->
+            val aspect = component.bounds.width / component.bounds.height
+            component.pixelCount >= max(240, image.width * image.height / 18_000) &&
+                component.bounds.width >= 0.20 &&
+                aspect in 3.0..14.0
+        }
+        val winner = candidates.maxByOrNull { it.pixelCount }
+            ?: return Recognition.unknown("refresh button not visible")
+        val confidence = (winner.pixelCount.toDouble() / (image.width * image.height / 7_000.0))
+            .coerceIn(0.0, 1.0).toFloat()
+        return Recognition(
+            value = winner.bounds,
+            confidence = confidence,
+            accepted = confidence >= 0.70f,
+            rejectionReason = "refresh confidence below threshold".takeIf { confidence < 0.70f },
+        )
+    }
+
+    private fun refreshOrangeComponents(image: ArgbImage, rect: NormalizedRect): List<VisualComponent> {
+        val box = pixelBox(image, rect)
+        val step = max(1, image.width / 640)
+        val width = max(1, (box.width + step - 1) / step)
+        val height = max(1, (box.height + step - 1) / step)
+        val mask = BooleanArray(width * height)
+        for (gy in 0 until height) for (gx in 0 until width) {
+            val x = min(box.right - 1, box.left + gx * step)
+            val y = min(box.bottom - 1, box.top + gy * step)
+            val color = image.argb(x, y)
+            val r = red(color); val g = green(color); val b = blue(color)
+            mask[gy * width + gx] = r >= 170 && g in 75..215 && b <= 135 && r >= g + 25
+        }
+        val seen = BooleanArray(mask.size)
+        val queue = IntArray(mask.size)
+        val result = mutableListOf<VisualComponent>()
+        for (start in mask.indices) {
+            if (!mask[start] || seen[start]) continue
+            var head = 0; var tail = 0; var count = 0
+            var minX = width; var minY = height; var maxX = 0; var maxY = 0
+            var sumX = 0L; var sumY = 0L
+            queue[tail++] = start; seen[start] = true
+            while (head < tail) {
+                val current = queue[head++]; val x = current % width; val y = current / width
+                count++; minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+                sumX += x; sumY += y
+                if (x > 0) tail = enqueue(current - 1, mask, seen, queue, tail)
+                if (x + 1 < width) tail = enqueue(current + 1, mask, seen, queue, tail)
+                if (y > 0) tail = enqueue(current - width, mask, seen, queue, tail)
+                if (y + 1 < height) tail = enqueue(current + width, mask, seen, queue, tail)
+            }
+            if (count < 20) continue
+            val bounds = NormalizedRect(
+                (box.left + minX * step).toDouble() / image.width,
+                (box.top + minY * step).toDouble() / image.height,
+                min(image.width, box.left + (maxX + 1) * step).toDouble() / image.width,
+                min(image.height, box.top + (maxY + 1) * step).toDouble() / image.height,
+            )
+            result += VisualComponent(
+                pixelCount = count,
+                bounds = bounds,
+                centroid = bounds.center,
+                confidence = 1f,
+            )
         }
         return result
     }

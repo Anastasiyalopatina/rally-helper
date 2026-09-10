@@ -15,6 +15,8 @@ import radar.vision.RallyCandidate
 import radar.vision.RallyConfidences
 import radar.vision.RallyId
 import radar.vision.RallyTracker
+import radar.vision.RefreshCoordinator
+import radar.vision.Recognition
 import radar.vision.OneTapRequest
 import radar.vision.OneTapRequestGuard
 import radar.vision.ScoredCardCandidate
@@ -167,6 +169,20 @@ fun main() {
     val distinctIdentity = identityTracker.update(frame(42, listOf(candidate(lower, 1, 48, identity = visualIdentityB)))).active
         .single { it.presentInCurrentFrame }
     check(distinctIdentity.id != identityA.id) { "Different title+coordinate identity must create a different rally" }
+
+    val refreshBounds = NormalizedRect(0.31, 0.93, 0.69, 0.98)
+    fun refreshFrame(id: Long, visible: Boolean) = frame(id, emptyList()).copy(
+        refreshButton = if (visible) Recognition(refreshBounds, 1f, accepted = true)
+        else Recognition.unknown("not visible"),
+    )
+    val refresh = RefreshCoordinator(minimumIntervalMs = 750, retryAfterMs = 2_000)
+    check(refresh.onFrame(refreshFrame(50, true))?.frameId == 50L)
+    check(refresh.onFrame(refreshFrame(51, true)) == null) { "A visible refresh button must not be tapped every frame" }
+    check(refresh.onFrame(refreshFrame(52, false)) == null)
+    check(refresh.onFrame(refreshFrame(53, false)) == null)
+    check(refresh.onFrame(refreshFrame(54, true))?.frameId == 54L) { "Two absent frames must rearm refresh" }
+    check(refresh.onFrame(refreshFrame(55, true)) == null)
+    check(refresh.onFrame(refreshFrame(57, true))?.frameId == 57L) { "A stuck button must retry after timeout" }
 
     val machine = AutomationStateMachine()
     check(machine.dispatch(AutomationEvent.DelayElapsed(99), 0) is TransitionResult.Rejected)

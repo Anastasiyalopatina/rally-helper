@@ -8,6 +8,7 @@ import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -58,6 +59,7 @@ import com.rallyhelper.debug.CaptureLabLabel
 import com.rallyhelper.debug.CaptureDatasetSplit
 import com.rallyhelper.debug.CaptureLabStore
 import com.rallyhelper.debug.DebugCaptureStore
+import com.rallyhelper.input.GestureActionController
 import kotlinx.coroutines.launch
 import radar.vision.RuntimeMode
 import kotlin.math.roundToInt
@@ -72,6 +74,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun RadarScreen() {
         val status by RadarRuntime.status.collectAsStateWithLifecycle()
+        val refreshInputConnected by GestureActionController.connected.collectAsStateWithLifecycle()
         val settingsStore = remember { RadarSettingsStore(this@MainActivity) }
         val settings by settingsStore.settings.collectAsStateWithLifecycle(initialValue = RadarSettings())
         val scope = rememberCoroutineScope()
@@ -207,6 +210,13 @@ class MainActivity : ComponentActivity() {
                             )
                         }) { Text("Разрешить overlay в Android") }
                     }
+                    Text(
+                        if (refreshInputConnected) "Автообновление списка: подключено"
+                        else "Автообновление списка: требуется спецвозможность Android",
+                    )
+                    if (!refreshInputConnected) OutlinedButton(onClick = {
+                        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    }) { Text("Включить Rally Helper · Refresh") }
                 }
 
                 SettingsCard("Диагностика") {
@@ -365,6 +375,10 @@ private fun RuntimeCard(status: RadarStatus) = SettingsCard("Состояние"
     Text("Реальные попытки: ${status.actualAttempts} · успешно: ${status.actualSuccesses} · неуспешно: ${status.actualFailures}")
     Text("Full before join: ${status.fullBeforeJoin} · no squad: ${status.noSquad} · too late: ${status.tooLate}")
     Text("Vision reject: ${status.visionRejects} · safety abort: ${status.safetyAborts}")
+    Text(
+        "Refresh: запросов ${status.refreshRequests} · выполнено ${status.refreshSuccesses} · " +
+            "ошибок ${status.refreshFailures}",
+    )
     Text(
         "Latency avg/p50/p95: ${status.averageLatencyMs ?: "—"}/" +
             "${status.p50LatencyMs ?: "—"}/${status.p95LatencyMs ?: "—"} мс",

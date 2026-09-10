@@ -305,6 +305,11 @@ class CaptureLabStore(private val context: Context, private val windowMs: Long =
                 .put("accepted", analysis.travelTime.accepted)
                 .put("rejectionReason", analysis.travelTime.rejectionReason ?: JSONObject.NULL))
             .put("sendButtonFound", analysis.sendButtonFound)
+            .put("refreshButton", JSONObject()
+                .put("found", analysis.refreshButton.accepted)
+                .put("confidence", analysis.refreshButton.confidence.toDouble())
+                .put("bounds", analysis.refreshButton.value?.let(::rectJson) ?: JSONObject.NULL)
+                .put("rejectionReason", analysis.refreshButton.rejectionReason ?: JSONObject.NULL))
             .put("currentTracks", JSONArray(frame.currentTracks.map { track ->
                 JSONObject()
                     .put("trackId", track.id.value)

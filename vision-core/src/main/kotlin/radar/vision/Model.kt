@@ -123,6 +123,7 @@ data class FrameAnalysis(
     val rallies: List<RallyCandidate> = emptyList(),
     val travelTime: Recognition<Int> = Recognition.unknown("not a march screen"),
     val sendButtonFound: Boolean = false,
+    val refreshButton: Recognition<NormalizedRect> = Recognition.unknown("not an event-list screen"),
     val squads: List<SquadInfo> = emptyList(),
     val diagnostics: Map<String, Double> = emptyMap(),
 )

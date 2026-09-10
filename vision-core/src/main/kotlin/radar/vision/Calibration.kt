@@ -26,6 +26,7 @@ data class CalibrationProfile(
     val participantCapacityLocal: NormalizedRect = NormalizedRect(0.887, 0.835, 0.915, 0.93),
     val countdownDigitsLocal: NormalizedRect = NormalizedRect(0.775, 0.33, 0.91, 0.372),
     val plusBandLocal: NormalizedRect = NormalizedRect(0.38, 0.41, 0.98, 0.75),
+    val refreshButtonBand: NormalizedRect = NormalizedRect(0.24, 0.88, 0.76, 0.985),
     val sendButtonBand: NormalizedRect = NormalizedRect(0.30, 0.735, 0.71, 0.805),
     val travelTimerDigits: NormalizedRect = NormalizedRect(0.43, 0.704, 0.62, 0.741),
     val worldSquadPanel: NormalizedRect = NormalizedRect(0.01, 0.145, 0.39, 0.34),

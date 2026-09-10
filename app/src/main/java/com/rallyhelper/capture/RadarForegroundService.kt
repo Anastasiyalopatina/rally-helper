@@ -32,6 +32,7 @@ import com.rallyhelper.data.RadarRepository
 import com.rallyhelper.data.RadarSettings
 import com.rallyhelper.data.RadarSettingsStore
 import com.rallyhelper.debug.DebugCaptureStore
+import com.rallyhelper.input.GestureActionController
 import com.rallyhelper.debug.CaptureLabLabel
 import com.rallyhelper.debug.CaptureDatasetSplit
 import com.rallyhelper.debug.CaptureLabMetadata
@@ -48,8 +49,10 @@ import radar.vision.BossType
 import radar.vision.AutoPolicyConfig
 import radar.vision.CalibrationProfile
 import radar.vision.DecisionKind
+import radar.vision.FrameAnalysis
 import radar.vision.JoinedState
 import radar.vision.RallyTracker
+import radar.vision.RefreshCoordinator
 import radar.vision.RadarAlertPolicy
 import radar.vision.RuntimeMode
 import radar.vision.SafetyPolicy
@@ -71,6 +74,7 @@ class RadarForegroundService : Service() {
     private val frameIds = AtomicLong()
     private val lastOfferedForAnalysisNs = AtomicLong()
     private val tracker = RallyTracker()
+    private val refreshCoordinator = RefreshCoordinator()
     private val calibration = CalibrationProfile()
     private val detector by lazy { RadarDetectorFactory.create(applicationContext) }
     private val debugStore by lazy { DebugCaptureStore(applicationContext) }
@@ -113,6 +117,9 @@ class RadarForegroundService : Service() {
     private var safetyRejectCount = 0L
     private var visionRejectCount = 0L
     private var safetyAbortCount = 0L
+    private val refreshRequestCount = AtomicLong()
+    private val refreshSuccessCount = AtomicLong()
+    private val refreshFailureCount = AtomicLong()
     private var sessionId: Long? = null
     private var captureWidth = 0
     private var captureHeight = 0
@@ -224,6 +231,7 @@ class RadarForegroundService : Service() {
     private fun resetSessionState(currentSettings: RadarSettings) {
         pending.getAndSet(null)?.close()
         tracker.reset()
+        refreshCoordinator.reset()
         shadowCoordinator.reset()
         frameIds.set(0)
         lastOfferedForAnalysisNs.set(0)
@@ -248,6 +256,9 @@ class RadarForegroundService : Service() {
         safetyRejectCount = 0
         visionRejectCount = 0
         safetyAbortCount = 0
+        refreshRequestCount.set(0)
+        refreshSuccessCount.set(0)
+        refreshFailureCount.set(0)
         lastAbortReason = null
         RadarRuntime.resetForSession(currentSettings.mode)
     }
@@ -430,6 +441,7 @@ class RadarForegroundService : Service() {
                     val observedMs = android.os.SystemClock.elapsedRealtime()
                     val analysis = detector.analyze(argbImage, frameIds.incrementAndGet(), observedMs)
                     lastAnalyzedFrameId = analysis.frameId
+                    maybeDispatchRefresh(analysis)
                     if (analysis.screen == ScreenState.UNKNOWN) recordAbortOnce("screen:UNKNOWN") else lastAbortReason = null
                     val tracking = tracker.update(analysis)
                     val visibleNow = tracking.active.filter {
@@ -505,7 +517,7 @@ class RadarForegroundService : Service() {
                                     skipMin = currentSettings.skipMin,
                                     skipMax = currentSettings.skipMax,
                                     safetyMarginSeconds = currentSettings.safetyMarginSeconds,
-                                    detectorVersion = "c3-event-tabs-identity-v3",
+                                    detectorVersion = "c3-event-refresh-identity-v4",
                                     templateVersion = "runtime-template-v2",
                                 ),
                             )
@@ -576,6 +588,9 @@ class RadarForegroundService : Service() {
                             safetyRejects = safetyRejectCount,
                             visionRejects = visionRejectCount,
                             safetyAborts = safetyAbortCount,
+                            refreshRequests = refreshRequestCount.get(),
+                            refreshSuccesses = refreshSuccessCount.get(),
+                            refreshFailures = refreshFailureCount.get(),
                             averageLatencyMs = if (latencySamples == 0L) null else latencyTotalMs / latencySamples,
                             p50LatencyMs = sortedLatencies.percentile(0.50),
                             p95LatencyMs = sortedLatencies.percentile(0.95),
@@ -601,6 +616,46 @@ class RadarForegroundService : Service() {
         } finally {
             draining.set(false)
             if (pending.get() != null && draining.compareAndSet(false, true)) executor.execute(::drainLatest)
+        }
+    }
+
+    private fun maybeDispatchRefresh(analysis: FrameAnalysis) {
+        if (automationPaused) {
+            refreshCoordinator.reset()
+            return
+        }
+        val request = refreshCoordinator.onFrame(analysis) ?: return
+        refreshRequestCount.incrementAndGet()
+        val accepted = GestureActionController.tap(
+            point = request.targetBounds.center,
+            displayWidth = captureWidth,
+            displayHeight = captureHeight,
+        ) { succeeded ->
+            if (succeeded) {
+                refreshSuccessCount.incrementAndGet()
+            } else {
+                refreshFailureCount.incrementAndGet()
+                refreshCoordinator.onDispatchFailed(request.frameId)
+            }
+            RadarRuntime.update {
+                it.copy(
+                    refreshRequests = refreshRequestCount.get(),
+                    refreshSuccesses = refreshSuccessCount.get(),
+                    refreshFailures = refreshFailureCount.get(),
+                    message = if (succeeded) "Список событий обновлён" else "Refresh не выполнен: проверьте спецвозможность",
+                )
+            }
+        }
+        if (!accepted) {
+            refreshFailureCount.incrementAndGet()
+            refreshCoordinator.onDispatchFailed(request.frameId)
+            RadarRuntime.update {
+                it.copy(
+                    refreshRequests = refreshRequestCount.get(),
+                    refreshFailures = refreshFailureCount.get(),
+                    message = "Включите Rally Helper · Refresh в спецвозможностях Android",
+                )
+            }
         }
     }
 
