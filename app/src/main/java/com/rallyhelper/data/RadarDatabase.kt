@@ -29,6 +29,12 @@ import kotlinx.coroutines.flow.Flow
     @ColumnInfo(defaultValue = "0") val oneTapOpenAttempts: Long = 0,
     @ColumnInfo(defaultValue = "0") val oneTapOpenSuccesses: Long = 0,
     @ColumnInfo(defaultValue = "0") val oneTapOpenFailures: Long = 0,
+    @ColumnInfo(defaultValue = "0") val squadSelectionAttempts: Long = 0,
+    @ColumnInfo(defaultValue = "0") val squadSelectionSuccesses: Long = 0,
+    @ColumnInfo(defaultValue = "0") val squadSelectionFailures: Long = 0,
+    @ColumnInfo(defaultValue = "0") val sendAttempts: Long = 0,
+    @ColumnInfo(defaultValue = "0") val sendVerifiedSuccesses: Long = 0,
+    @ColumnInfo(defaultValue = "0") val sendFailures: Long = 0,
     @ColumnInfo(defaultValue = "0") val joinAttempts: Long = 0,
     @ColumnInfo(defaultValue = "0") val joinSuccesses: Long = 0,
     @ColumnInfo(defaultValue = "0") val joinFailures: Long = 0,
@@ -84,6 +90,9 @@ import kotlinx.coroutines.flow.Flow
             "actualAttempts = 0, actualSuccesses = 0, actualFailures = 0, " +
             "oneTapOpenAttempts = :oneTapOpenAttempts, " +
             "oneTapOpenSuccesses = :oneTapOpenSuccesses, oneTapOpenFailures = :oneTapOpenFailures, " +
+            "squadSelectionAttempts = :squadSelectionAttempts, " +
+            "squadSelectionSuccesses = :squadSelectionSuccesses, squadSelectionFailures = :squadSelectionFailures, " +
+            "sendAttempts = :sendAttempts, sendVerifiedSuccesses = :sendVerifiedSuccesses, sendFailures = :sendFailures, " +
             "joinAttempts = :joinAttempts, joinSuccesses = :joinSuccesses, joinFailures = :joinFailures " +
             "WHERE id = :sessionId",
     )
@@ -97,6 +106,12 @@ import kotlinx.coroutines.flow.Flow
         oneTapOpenAttempts: Long,
         oneTapOpenSuccesses: Long,
         oneTapOpenFailures: Long,
+        squadSelectionAttempts: Long,
+        squadSelectionSuccesses: Long,
+        squadSelectionFailures: Long,
+        sendAttempts: Long,
+        sendVerifiedSuccesses: Long,
+        sendFailures: Long,
         joinAttempts: Long,
         joinSuccesses: Long,
         joinFailures: Long,
@@ -109,7 +124,7 @@ import kotlinx.coroutines.flow.Flow
 
 @Database(
     entities = [RadarSession::class, RallyObservation::class, DetectorDecisionRecord::class, SafetyAbort::class],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 abstract class RadarDatabase : RoomDatabase() {

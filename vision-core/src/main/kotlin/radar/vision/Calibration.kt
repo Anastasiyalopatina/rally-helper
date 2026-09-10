@@ -29,6 +29,12 @@ data class CalibrationProfile(
     val refreshButtonBand: NormalizedRect = NormalizedRect(0.24, 0.88, 0.76, 0.985),
     val sendButtonBand: NormalizedRect = NormalizedRect(0.30, 0.735, 0.71, 0.805),
     val travelTimerDigits: NormalizedRect = NormalizedRect(0.43, 0.704, 0.62, 0.741),
+    val marchSquadSlots: List<NormalizedRect> = listOf(
+        NormalizedRect(0.065, 0.825, 0.285, 0.942),
+        NormalizedRect(0.285, 0.825, 0.495, 0.942),
+        NormalizedRect(0.495, 0.825, 0.705, 0.942),
+    ),
+    val marchTroopBar: NormalizedRect = NormalizedRect(0.205, 0.665, 0.765, 0.712),
     val worldSquadPanel: NormalizedRect = NormalizedRect(0.01, 0.145, 0.39, 0.34),
     val classifierThresholds: ClassifierThresholds = ClassifierThresholds(),
 ) {

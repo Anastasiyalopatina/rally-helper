@@ -5,12 +5,16 @@ import android.net.Uri
 import radar.vision.BossType
 import radar.vision.FrameAnalysis
 import radar.vision.JoinedState
+import radar.vision.MarchSquadInfo
+import radar.vision.MarchSquadState
 import radar.vision.NormalizedRect
 import radar.vision.RallyCandidate
 import radar.vision.RallyConfidences
 import radar.vision.RallyIdentityFingerprint
 import radar.vision.Recognition
 import radar.vision.ScreenState
+import radar.vision.SendButtonCandidate
+import radar.vision.TroopSanity
 
 /** Deterministic fixture compiled only into the oneTapIntegration variant. */
 internal object BuildVariantHooks {
@@ -21,10 +25,16 @@ internal object BuildVariantHooks {
         val delayMs: Long,
         val wrongExpectedPackage: Boolean,
         val geometryLoss: Boolean,
+        val squadStates: List<MarchSquadState>,
+        val selectedSquad: Int,
+        val travelSeconds: Int,
+        val troopsPresent: Boolean,
+        val sendEnabled: Boolean,
     )
 
     fun analysisOverride(context: Context, frameId: Long, observedAtMonotonicMs: Long): FrameAnalysis {
-        return when (read(context)?.screen) {
+        val state = read(context)
+        return when (state?.screen) {
             "TEST_EVENT" -> FrameAnalysis(
                 frameId = frameId,
                 observedAtMonotonicMs = observedAtMonotonicMs,
@@ -55,9 +65,23 @@ internal object BuildVariantHooks {
                 observedAtMonotonicMs,
                 ScreenState.MARCH_SCREEN,
                 1f,
-                travelTime = Recognition.unknown("integration marker"),
+                travelTime = stateRecognition(state.travelSeconds),
+                sendButton = SendButtonCandidate(NormalizedRect(.25, .78, .75, .92), state.sendEnabled, 1f),
+                marchSquads = state.squadStates.mapIndexed { index, squadState ->
+                        MarchSquadInfo(
+                            slotIndex = index + 1,
+                            bounds = NormalizedRect(.08 + index * .30, .25, .30 + index * .30, .43),
+                            state = squadState,
+                            selected = state.selectedSquad == index + 1,
+                            stateConfidence = 1f,
+                            selectedConfidence = if (state.selectedSquad == index + 1) 1f else 0f,
+                            redirectConfirmed = squadState == MarchSquadState.RETURNING,
+                        )
+                    },
+                troopSanity = TroopSanity(state.troopsPresent, 1f),
                 diagnostics = mapOf("oneTapIntegration" to 1.0),
             )
+            "WORLD_MAP" -> FrameAnalysis(frameId, observedAtMonotonicMs, ScreenState.WORLD_MAP, 1f)
             else -> FrameAnalysis(frameId, observedAtMonotonicMs, ScreenState.UNKNOWN, 0f)
         }
     }
@@ -75,7 +99,20 @@ internal object BuildVariantHooks {
                 cursor.getLong(cursor.getColumnIndexOrThrow("dispatchDelayMs")),
                 cursor.getInt(cursor.getColumnIndexOrThrow("wrongExpectedPackage")) != 0,
                 cursor.getInt(cursor.getColumnIndexOrThrow("geometryLoss")) != 0,
+                listOf("squad1State", "squad2State", "squad3State").map { column ->
+                    runCatching {
+                        MarchSquadState.valueOf(cursor.getString(cursor.getColumnIndexOrThrow(column)))
+                    }.getOrDefault(MarchSquadState.UNKNOWN)
+                },
+                cursor.getInt(cursor.getColumnIndexOrThrow("selectedSquad")),
+                cursor.getInt(cursor.getColumnIndexOrThrow("travelSeconds")),
+                cursor.getInt(cursor.getColumnIndexOrThrow("troopsPresent")) != 0,
+                cursor.getInt(cursor.getColumnIndexOrThrow("sendEnabled")) != 0,
             )
         }
     }.getOrNull()
+
+    private fun stateRecognition(seconds: Int): Recognition<Int> = if (seconds >= 0) {
+        Recognition(seconds, 1f, accepted = true)
+    } else Recognition.unknown("integration travel unknown")
 }

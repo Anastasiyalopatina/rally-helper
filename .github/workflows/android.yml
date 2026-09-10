@@ -17,4 +17,4 @@ jobs:
       - name: Core and calibration checks
         run: ./gradlew :vision-core:test :vision-core:verifyCalibration :vision-core:verifyMutations :vision-core:verifyRuntimeTemplates :vision-core:verifyCoreLogic :vision-core:verifyReplayInfrastructure
       - name: Build and lint
-        run: ./gradlew :app:assembleDebug :app:compileProductionDebugAndroidTestKotlin :app:lintProductionDebug :app:verifyNoRawCalibrationAssets :app:verifyProductionIsolation :test-target:assembleDebug
+        run: ./gradlew :app:assembleProductionDebug :app:assembleOneTapIntegrationDebug :app:compileProductionDebugAndroidTestKotlin :app:lintProductionDebug :app:lintOneTapIntegrationDebug :app:verifyNoRawCalibrationAssets :app:verifyProductionIsolation :test-target:assembleDebug

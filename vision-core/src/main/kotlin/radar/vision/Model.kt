@@ -120,6 +120,32 @@ data class RallyCandidate(
 
 enum class SquadState { FREE, MOVING, RETURNING, GATHERING, OCCUPIED_OTHER, LOCKED, UNKNOWN }
 
+enum class MarchSquadState { FREE, RETURNING, BUSY, UNKNOWN }
+
+data class MarchSquadInfo(
+    val slotIndex: Int,
+    val bounds: NormalizedRect,
+    val state: MarchSquadState,
+    val selected: Boolean,
+    val stateConfidence: Float,
+    val selectedConfidence: Float,
+    val statusTimerSeconds: Int? = null,
+    val redirectConfirmed: Boolean = false,
+)
+
+data class SendButtonCandidate(
+    val bounds: NormalizedRect,
+    val enabled: Boolean,
+    val confidence: Float,
+)
+
+data class TroopSanity(
+    val nonEmpty: Boolean,
+    val confidence: Float,
+    val troopsCurrent: Int? = null,
+    val troopsCapacity: Int? = null,
+)
+
 data class SquadInfo(
     val slotIndex: Int,
     val state: SquadState,
@@ -137,6 +163,9 @@ data class FrameAnalysis(
     val rallies: List<RallyCandidate> = emptyList(),
     val travelTime: Recognition<Int> = Recognition.unknown("not a march screen"),
     val sendButtonFound: Boolean = false,
+    val sendButton: SendButtonCandidate? = null,
+    val marchSquads: List<MarchSquadInfo> = emptyList(),
+    val troopSanity: TroopSanity = TroopSanity(false, 0f),
     val refreshButton: Recognition<RefreshControlCandidate> = Recognition.unknown("not an event-list screen"),
     val squads: List<SquadInfo> = emptyList(),
     val diagnostics: Map<String, Double> = emptyMap(),

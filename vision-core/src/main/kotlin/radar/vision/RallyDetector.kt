@@ -11,6 +11,7 @@ class RallyDetector(
     private val runtimeTemplates = templates.runtimeOrNull()
         ?: RuntimeTemplateCompiler.compile(templates.references, profile)
     private val digits = DigitRecognizer.fromTemplates(runtimeTemplates.digitTemplates)
+    private val marchSquads = MarchSquadSelectorDetector(profile)
     private var previousRefreshBounds: NormalizedRect? = null
     private var refreshStableFrames: Int = 0
 
@@ -85,10 +86,11 @@ class RallyDetector(
                 observedAtMonotonicMs = monotonicMs,
                 screen = screen,
                 screenConfidence = confidence,
-                travelTime = if (runtimeTemplates.labelledTravelTimes >= 2) {
-                    digits.readClock(image, profile.travelTimerDigits)
-                } else Recognition.unknown("travel timer unverified: fewer than two labelled times"),
+                travelTime = digits.readClock(image, profile.travelTimerDigits),
                 sendButtonFound = sendBlue >= 0.16,
+                sendButton = marchSquads.detectSendButton(image),
+                marchSquads = marchSquads.detect(image),
+                troopSanity = marchSquads.detectTroops(image),
                 diagnostics = diagnostics + ("digitLibrarySize" to digits.supportedDigits.size.toDouble()),
             )
             ScreenState.WORLD_MAP -> FrameAnalysis(

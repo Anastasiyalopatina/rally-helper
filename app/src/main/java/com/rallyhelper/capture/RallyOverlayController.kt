@@ -20,6 +20,7 @@ import radar.vision.RallyCandidate
 import radar.vision.RallyId
 import radar.vision.RuntimeMode
 import radar.vision.ScreenState
+import java.util.concurrent.atomic.AtomicLong
 
 internal data class OverlayCounters(
     val totalSeen: Long,
@@ -38,7 +39,10 @@ internal data class OverlayAutomationState(
     val delayRemainingSeconds: Int? = null,
 )
 
-internal enum class OverlayJoinPhase { IDLE, READY, CHECKING, OPENING, OPENED, FAILED }
+internal enum class OverlayJoinPhase {
+    IDLE, READY, CHECKING, OPENING, ANALYZING_SQUADS, SELECTING_SQUAD,
+    CHECKING_TIME, SENDING, VERIFYING_SEND, SUCCESS, MANUAL_FALLBACK, FAILED,
+}
 
 internal data class OverlayJoinState(
     val phase: OverlayJoinPhase = OverlayJoinPhase.IDLE,
@@ -51,9 +55,11 @@ internal class RallyOverlayController(
     private val onJoinRequested: (OneTapRequest) -> Unit,
     private val onActionsPermissionRequested: () -> Unit,
     private val onPauseRequested: () -> Unit,
+    private val onStopRequested: () -> Unit,
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val windowManager = context.getSystemService(WindowManager::class.java)
+    private val lifecycleRevision = AtomicLong()
     @Volatile private var root: LinearLayout? = null
     private var title: TextView? = null
     private var timer: TextView? = null
@@ -66,7 +72,11 @@ internal class RallyOverlayController(
 
     fun setEnabled(value: Boolean) {
         enabled = value
-        mainHandler.post { if (value && Settings.canDrawOverlays(context)) ensureView() else removeView() }
+        val revision = lifecycleRevision.incrementAndGet()
+        mainHandler.post {
+            if (revision != lifecycleRevision.get()) return@post
+            if (value && Settings.canDrawOverlays(context)) ensureView() else removeView()
+        }
     }
 
     fun update(
@@ -84,6 +94,7 @@ internal class RallyOverlayController(
             displayedRallyId = rallyId
             displayedFrameId = frameId
             title?.text = when {
+                mode == RuntimeMode.ONE_TAP -> "ONE TAP"
                 rally == null -> mode.displayName()
                 else -> "${mode.displayName()} · ${rally.level ?: "?"} ур · " +
                     "${rally.participantCount ?: "?"}/${rally.capacity ?: "?"}"
@@ -113,7 +124,13 @@ internal class RallyOverlayController(
                     mode == RuntimeMode.ONE_TAP && !join.actionsAvailable -> "РАЗРЕШИТЬ ДЕЙСТВИЯ"
                     mode == RuntimeMode.ONE_TAP && join.phase == OverlayJoinPhase.CHECKING -> "ПРОВЕРКА…"
                     mode == RuntimeMode.ONE_TAP && join.phase == OverlayJoinPhase.OPENING -> "ОТКРЫВАЮ…"
-                    mode == RuntimeMode.ONE_TAP && join.phase == OverlayJoinPhase.OPENED -> "ОТРЯД ОТКРЫТ"
+                    mode == RuntimeMode.ONE_TAP && join.phase == OverlayJoinPhase.ANALYZING_SQUADS -> "ИЩУ ОТРЯД…"
+                    mode == RuntimeMode.ONE_TAP && join.phase == OverlayJoinPhase.SELECTING_SQUAD -> "ВЫБИРАЮ…"
+                    mode == RuntimeMode.ONE_TAP && join.phase == OverlayJoinPhase.CHECKING_TIME -> "ПРОВЕРЯЮ ВРЕМЯ…"
+                    mode == RuntimeMode.ONE_TAP && join.phase == OverlayJoinPhase.SENDING -> "ОТПРАВЛЯЮ…"
+                    mode == RuntimeMode.ONE_TAP && join.phase == OverlayJoinPhase.VERIFYING_SEND -> "ПРОВЕРЯЮ…"
+                    mode == RuntimeMode.ONE_TAP && join.phase == OverlayJoinPhase.SUCCESS -> "ОТПРАВЛЕН ✓"
+                    mode == RuntimeMode.ONE_TAP && join.phase == OverlayJoinPhase.MANUAL_FALLBACK -> "ЗАВЕРШИТЕ ВРУЧНУЮ"
                     mode == RuntimeMode.ONE_TAP && join.phase == OverlayJoinPhase.FAILED -> "НЕ УДАЛОСЬ"
                     mode == RuntimeMode.ONE_TAP && rallyId == null -> "НЕТ ЦЕЛИ"
                     mode == RuntimeMode.ONE_TAP -> "ВСТУПИТЬ"
@@ -173,10 +190,19 @@ internal class RallyOverlayController(
         return true
     }
 
-    fun close() = mainHandler.post { removeView() }
+    fun close() {
+        // Closing is terminal for this controller instance. Without this invalidation, an
+        // update already queued on the main thread can recreate the window after STOP.
+        enabled = false
+        lifecycleRevision.incrementAndGet()
+        if (Looper.myLooper() == Looper.getMainLooper()) removeView()
+        else mainHandler.postAtFrontOfQueue { removeView() }
+    }
 
     private fun ensureView() {
         if (root != null) return
+        // A service restart must never leave two in-process overlay windows attached.
+        activeController?.takeIf { it !== this }?.removeView()
         val panel = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(8), dp(12), dp(8))
@@ -191,17 +217,28 @@ internal class RallyOverlayController(
             textSize = 15f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             text = "RADAR"
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(44)
         }
-        val clock = TextView(context).apply { setTextColor(Color.WHITE); textSize = 14f; text = "—" }
-        val stats = TextView(context).apply { setTextColor(Color.LTGRAY); textSize = 13f; text = "✓ 0   ✕ 0   ↷ 0" }
         val button = Button(context).apply { visibility = View.GONE }
-        panel.addView(heading)
-        panel.addView(clock)
-        panel.addView(stats)
+        val header = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val close = Button(context).apply {
+            text = "×"
+            contentDescription = "Остановить Rally Helper и закрыть overlay"
+            minWidth = dp(40)
+            minimumWidth = dp(40)
+            setOnClickListener { onStopRequested() }
+        }
+        header.addView(heading, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(close, LinearLayout.LayoutParams(dp(44), dp(44)))
+        panel.addView(header)
         panel.addView(button)
         val metrics = context.resources.displayMetrics
         val layout = WindowManager.LayoutParams(
-            minOf(dp(230), (metrics.widthPixels * 0.28).toInt()),
+            minOf(dp(200), (metrics.widthPixels * 0.25).toInt()),
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
@@ -213,10 +250,11 @@ internal class RallyOverlayController(
         }
         installDrag(heading, panel, layout)
         windowManager.addView(panel, layout)
+        activeController = this
         root = panel
         title = heading
-        timer = clock
-        counters = stats
+        timer = null
+        counters = null
         action = button
         params = layout
         panel.post {
@@ -230,6 +268,9 @@ internal class RallyOverlayController(
         var originY = 0
         var touchX = 0f
         var touchY = 0f
+        var updateScheduled = false
+        var targetX = 0
+        var targetY = 0
         handle.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -240,20 +281,34 @@ internal class RallyOverlayController(
                     val metrics = context.resources.displayMetrics
                     val maxX = maxOf(0, metrics.widthPixels - view.width)
                     val maxY = maxOf(0, metrics.heightPixels - view.height)
-                    layout.x = (originX + event.rawX - touchX).toInt().coerceIn(0, maxX)
-                    layout.y = (originY + event.rawY - touchY).toInt().coerceIn(0, maxY)
-                    windowManager.updateViewLayout(view, layout)
+                    targetX = (originX + event.rawX - touchX).toInt().coerceIn(0, maxX)
+                    targetY = (originY + event.rawY - touchY).toInt().coerceIn(0, maxY)
+                    if (!updateScheduled) {
+                        updateScheduled = true
+                        view.postOnAnimation {
+                            updateScheduled = false
+                            layout.x = targetX
+                            layout.y = targetY
+                            runCatching { windowManager.updateViewLayout(view, layout) }
+                        }
+                    }
                     true
                 }
-                else -> false
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
+                else -> true
             }
         }
     }
 
     private fun removeView() {
-        root?.let { runCatching { windowManager.removeView(it) } }
+        root?.let { view ->
+            runCatching {
+                if (view.isAttachedToWindow) windowManager.removeViewImmediate(view)
+            }
+        }
         root = null; title = null; timer = null; counters = null; action = null; params = null
         displayedRallyId = null; displayedFrameId = null
+        if (activeController === this) activeController = null
     }
 
     private fun dp(value: Int): Int = (value * context.resources.displayMetrics.density).toInt()
@@ -263,6 +318,10 @@ internal class RallyOverlayController(
         RuntimeMode.ONE_TAP -> "ONE_TAP"
         RuntimeMode.AUTO -> "AUTO"
         RuntimeMode.SHADOW_AUTO -> "SHADOW"
+    }
+
+    private companion object {
+        @Volatile private var activeController: RallyOverlayController? = null
     }
 }
 

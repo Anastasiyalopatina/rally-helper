@@ -258,7 +258,7 @@ fun main() {
     )
     check(gate().allowed)
     check(gate(connected = false).reason == GestureRejectReason.SERVICE_DISCONNECTED)
-    check(gate(request = gesture.copy(purpose = GesturePurpose.SEND)).reason == GestureRejectReason.WRONG_PURPOSE)
+    check(gate(request = gesture.copy(purpose = GesturePurpose.SEND)).reason == GestureRejectReason.WRONG_FLOW)
     check(gate(now = 1_751).reason == GestureRejectReason.EXPIRED)
     check(gate(verifiedPackage = "").reason == GestureRejectReason.UNVERIFIED_EXPECTED_PACKAGE)
     check(gate(foregroundPackage = "wrong.package").reason == GestureRejectReason.WRONG_FOREGROUND_PACKAGE)

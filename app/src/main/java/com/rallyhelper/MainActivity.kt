@@ -2,6 +2,7 @@ package com.rallyhelper
 
 import android.Manifest
 import android.app.Activity
+import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
@@ -52,6 +53,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.rallyhelper.capture.RadarForegroundService
 import com.rallyhelper.capture.LocalAlertFeedback
 import com.rallyhelper.data.DebugCaptureMode
+import com.rallyhelper.data.AlertSoundMode
 import com.rallyhelper.data.RadarSettings
 import com.rallyhelper.data.RadarSettingsStore
 import com.rallyhelper.data.RadarRepository
@@ -93,6 +95,10 @@ class MainActivity : ComponentActivity() {
         val settings by settingsStore.settings.collectAsStateWithLifecycle(initialValue = RadarSettings())
         val scope = rememberCoroutineScope()
         val alertFeedback = remember { LocalAlertFeedback(this@MainActivity) }
+        RadarForegroundService.ensureNotificationChannels(this@MainActivity)
+        val alertDiagnostics = alertFeedback.diagnostics()
+        val alertChannel = getSystemService(NotificationManager::class.java)
+            .getNotificationChannel(RadarForegroundService.CHANNEL_RALLY_ALERTS)
         DisposableEffect(alertFeedback) { onDispose { alertFeedback.close() } }
         var showHistory by remember { mutableStateOf(false) }
         val historyRepository = remember { RadarRepository.create(this@MainActivity) }
@@ -185,7 +191,7 @@ class MainActivity : ComponentActivity() {
                     Text(settings.mode.description())
                     if (settings.mode == RuntimeMode.ONE_TAP) {
                         Text(
-                            "ONE TAP · experimental: одно нажатие открывает экран отряда; отправка остаётся ручной.",
+                            "ONE TAP · experimental: одно нажатие безопасно пытается открыть цель, выбрать отряд и отправить его.",
                             color = Color(0xFF15803D),
                         )
                         Text(
@@ -210,6 +216,21 @@ class MainActivity : ComponentActivity() {
                     Text("MediaProjection         ${if (status.running) "✅" else "❌ после запуска"}")
                     Text("Выбранные уровни        ${if (settings.selectedLevels.isNotEmpty()) "✅" else "❌"}")
                     Text("Сигнал                  ${if (signalChecked) "✅ проверен" else "проверить"}")
+                    Text("Sound enabled           ${if (settings.soundEnabled) "✅" else "❌"}")
+                    Text("Sound mode              ${settings.alertSoundMode}")
+                    Text(
+                        "Media volume             ${alertDiagnostics.mediaVolume}/${alertDiagnostics.mediaVolumeMax} · " +
+                            "notification ${alertDiagnostics.notificationVolume}/${alertDiagnostics.notificationVolumeMax}",
+                    )
+                    Text("Vibration               ${if (settings.vibrationEnabled) "✅" else "❌"}")
+                    Text("Vibrator available      ${if (alertDiagnostics.hasVibrator) "✅" else "❌"}")
+                    Text("Amplitude control       ${if (alertDiagnostics.hasAmplitudeControl) "✅" else "—"}")
+                    Text(
+                        "Notification permission  ${if (Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) "✅" else "❌"}",
+                    )
+                    Text(
+                        "Alert channel            ${if (alertChannel?.importance?.let { it >= NotificationManager.IMPORTANCE_DEFAULT } == true) "✅" else "❌"}",
+                    )
                     if (!overlayReady) OutlinedButton(onClick = {
                         overlayPermission.launch(
                             Intent(
@@ -234,6 +255,20 @@ class MainActivity : ComponentActivity() {
                     }
                     if (settings.selectedLevels.isEmpty()) Text("Выберите хотя бы один уровень.", color = Color.Red)
                     Text("Свободные места: вступать, если доступно хотя бы одно.")
+                    if (settings.mode == RuntimeMode.ONE_TAP) {
+                        Text("Приоритет отрядов: ${settings.squadPriority.joinToString(" → ")}")
+                        OutlinedButton(onClick = {
+                            val next = settings.squadPriority.drop(1) + settings.squadPriority.first()
+                            scope.launch { settingsStore.setSquadPriority(next) }
+                        }) { Text("Изменить приоритет") }
+                        SettingSwitch("Использовать возвращающиеся отряды", settings.allowReturningSquads) {
+                            scope.launch { settingsStore.setAllowReturningSquads(it) }
+                        }
+                        SettingSwitch(
+                            "Отправлять при неизвестном времени пути · Experimental",
+                            settings.sendWhenTravelUnknown,
+                        ) { scope.launch { settingsStore.setSendWhenTravelUnknown(it) } }
+                    }
                     if (settings.mode == RuntimeMode.AUTO || settings.mode == RuntimeMode.SHADOW_AUTO) {
                         HorizontalDivider()
                         RangeValueSlider(
@@ -261,14 +296,27 @@ class MainActivity : ComponentActivity() {
                     SettingSwitch("Звук", settings.soundEnabled) {
                         scope.launch { settingsStore.setSoundEnabled(it) }
                     }
+                    Text("Звук сигнала")
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        ModeButton("По режиму телефона", settings.alertSoundMode == AlertSoundMode.SYSTEM) {
+                            scope.launch { settingsStore.setAlertSoundMode(AlertSoundMode.SYSTEM) }
+                        }
+                        ModeButton("Через мультимедиа", settings.alertSoundMode == AlertSoundMode.MEDIA) {
+                            scope.launch { settingsStore.setAlertSoundMode(AlertSoundMode.MEDIA) }
+                        }
+                    }
                     SettingSwitch("Вибрация", settings.vibrationEnabled) {
                         scope.launch { settingsStore.setVibrationEnabled(it) }
                     }
                     OutlinedButton(onClick = {
-                        alertFeedback.emit(settings.soundEnabled, settings.vibrationEnabled)
+                        alertFeedback.emit(
+                            settings.soundEnabled,
+                            settings.vibrationEnabled,
+                            settings.alertSoundMode,
+                        )
                         signalChecked = true
                         RadarRuntime.update { it.copy(message = "Проверочный сигнал отправлен") }
-                    }) { Text("Проверить звук и вибрацию") }
+                    }) { Text("ПРОВЕРИТЬ СИГНАЛ") }
                     if (settings.mode == RuntimeMode.ONE_TAP) {
                         Text("Overlay с кнопкой ВСТУПИТЬ включается автоматически.")
                     } else SettingSwitch("Показывать overlay", settings.overlayEnabled) {
@@ -289,6 +337,9 @@ class MainActivity : ComponentActivity() {
                 }
 
                 SettingsCard("Обновление списка") {
+                    if (settings.mode == RuntimeMode.ONE_TAP) {
+                        Text("ONE TAP: кнопка нажимается только после её обнаружения на свежем кадре; координаты заранее не используются.")
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         ModeButton("Выключено", settings.refreshMode == RefreshMode.OFF) {
                             scope.launch { settingsStore.setRefreshMode(RefreshMode.OFF) }
@@ -552,9 +603,18 @@ private fun RuntimeCard(status: RadarStatus) = SettingsCard("Состояние"
         "Открытия ONE TAP: ${status.oneTapOpenAttempts} · открыто: ${status.oneTapOpenSuccesses} · " +
             "ошибок: ${status.oneTapOpenFailures}",
     )
+    Text(
+        "Выбор отряда: ${status.squadSelectionAttempts} · подтверждено: ${status.squadSelectionSuccesses} · " +
+            "ошибок: ${status.squadSelectionFailures}",
+    )
+    Text(
+        "Отправка: ${status.sendAttempts} · подтверждено: ${status.sendVerifiedSuccesses} · " +
+            "ошибок: ${status.sendFailures}",
+    )
     Text("Вступления: ${status.joinAttempts} · успешно: ${status.joinSuccesses} · ошибок: ${status.joinFailures}")
     Text("Full before join: ${status.fullBeforeJoin} · no squad: ${status.noSquad} · too late: ${status.tooLate}")
     Text("Vision reject: ${status.visionRejects} · safety abort: ${status.safetyAborts}")
+    status.squadDiagnostics?.let { Text("Squads: $it") }
     Text(
         "Refresh: найдено ${status.refreshDetected} · запросов ${status.refreshRequests} · " +
             "принято ${status.refreshGestureAccepted} · завершено ${status.refreshGestureCompleted}",

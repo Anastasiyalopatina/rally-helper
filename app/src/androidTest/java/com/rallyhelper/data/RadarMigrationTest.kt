@@ -127,6 +127,36 @@ class RadarMigrationTest {
         ).use { db -> assertPreserved(db, "old-v1") }
     }
 
+    @Test
+    fun migrate5To6_addsSelectionAndSendCountersWithoutInventingResults() {
+        helper.createDatabase("migration-5-6", 5).use { db -> insertRecords(db, "old-v5", version = 5) }
+        helper.runMigrationsAndValidate("migration-5-6", 6, true, RadarRepository.MIGRATION_5_6).use { db ->
+            assertPreserved(db, "old-v5")
+            db.query(
+                "SELECT squadSelectionAttempts, squadSelectionSuccesses, squadSelectionFailures, " +
+                    "sendAttempts, sendVerifiedSuccesses, sendFailures FROM RadarSession WHERE id = 1",
+            ).use { cursor ->
+                check(cursor.moveToFirst())
+                repeat(6) { assertEquals(0L, cursor.getLong(it)) }
+            }
+        }
+    }
+
+    @Test
+    fun migrate1To6_preservesExistingRecords() {
+        createV1("migration-1-6")
+        helper.runMigrationsAndValidate(
+            "migration-1-6",
+            6,
+            true,
+            RadarRepository.MIGRATION_1_2,
+            RadarRepository.MIGRATION_2_3,
+            RadarRepository.MIGRATION_3_4,
+            RadarRepository.MIGRATION_4_5,
+            RadarRepository.MIGRATION_5_6,
+        ).use { db -> assertPreserved(db, "old-v1") }
+    }
+
     private fun createV1(name: String) {
         helper.createDatabase(name, 1).use { db -> insertRecords(db, "old-v1", version = 1) }
     }

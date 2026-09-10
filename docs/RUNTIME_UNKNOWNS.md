@@ -1,6 +1,6 @@
 # Runtime unknowns
 
-> This is a backlog of broader automation evidence. It does not block experimental ONE_TAP_A; see `docs/CURRENT_STATE.md`.
+> This is a backlog of broader automation evidence. It does not block experimental ONE TAP; see `docs/CURRENT_STATE.md`.
 
 The following items require a connected physical Android device and must not be inferred from desktop tests:
 
@@ -19,4 +19,4 @@ The following items require a connected physical Android device and must not be 
 - a controlled Capture Lab OFF versus ARMED CPU, RSS and latency benchmark;
 - sound and vibration delivery under the user's final device sound profile (the app pipeline was invoked on-device, while the current system profile muted audio and rejected vibration);
 
-These unknowns do not relock experimental ONE_TAP_A. They do keep ONE_TAP_B and AUTO unavailable, and unknown evidence always produces no action.
+These unknowns do not relock experimental ONE TAP. They keep AUTO unavailable, and unknown evidence always produces a manual fallback or no action.

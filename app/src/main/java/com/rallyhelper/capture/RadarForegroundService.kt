@@ -56,8 +56,10 @@ import radar.vision.FrameAnalysis
 import radar.vision.GestureCoordinator
 import radar.vision.GesturePurpose
 import radar.vision.JoinedState
-import radar.vision.OneTapFlowCoordinator
-import radar.vision.OneTapFlowUpdate
+import radar.vision.OneTapCompleteConfig
+import radar.vision.OneTapCompleteCoordinator
+import radar.vision.OneTapCompleteStage
+import radar.vision.OneTapCompleteUpdate
 import radar.vision.OneTapOpenPolicy
 import radar.vision.OneTapRequest
 import radar.vision.RallyTracker
@@ -86,12 +88,13 @@ class RadarForegroundService : Service() {
     private val draining = AtomicBoolean(false)
     private val capturedContentVisible = AtomicBoolean(true)
     private val actionInvalidationGeneration = AtomicLong()
+    private val stopping = AtomicBoolean(false)
     private val frameIds = AtomicLong()
     private val lastOfferedForAnalysisNs = AtomicLong()
     private val tracker = RallyTracker()
     private val refreshCoordinator = RefreshCoordinator()
     private val gestureCoordinator = GestureCoordinator()
-    private val oneTapCoordinator = OneTapFlowCoordinator()
+    private val oneTapCoordinator = OneTapCompleteCoordinator()
     private val targetSelector = TargetSelector()
     private val calibration = CalibrationProfile()
     private val detector by lazy { RadarDetectorFactory.create(applicationContext) }
@@ -107,6 +110,7 @@ class RadarForegroundService : Service() {
             onJoinRequested = ::handleJoinRequested,
             onActionsPermissionRequested = ::openAccessibilitySettings,
             onPauseRequested = ::toggleAutomationPause,
+            onStopRequested = ::stopFromUi,
         )
     }
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -149,6 +153,10 @@ class RadarForegroundService : Service() {
     @Volatile private var lastAnalyzedFrameId: Long? = null
     @Volatile private var overlayJoinState = OverlayJoinState()
     @Volatile private var pendingOneTapRequestId: String? = null
+    @Volatile private var oneTapOpenCounted = false
+    @Volatile private var oneTapSelectionCounted = false
+    @Volatile private var oneTapSelectionAttempted = false
+    @Volatile private var oneTapSendAttempted = false
 
     override fun onCreate() {
         super.onCreate()
@@ -164,7 +172,7 @@ class RadarForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            stopSelf()
+            stopFromUi()
             return START_NOT_STICKY
         }
         if (intent?.action == ACTION_PAUSE) {
@@ -221,6 +229,7 @@ class RadarForegroundService : Service() {
     }
 
     private fun applySettings(updated: RadarSettings) {
+        if (stopping.get()) return
         val previous = settings.get()
         settings.set(updated)
         if (previous.refreshMode != updated.refreshMode) {
@@ -283,6 +292,10 @@ class RadarForegroundService : Service() {
         gestureCoordinator.cancelAll()
         overlayJoinState = OverlayJoinState()
         pendingOneTapRequestId = null
+        oneTapOpenCounted = false
+        oneTapSelectionCounted = false
+        oneTapSelectionAttempted = false
+        oneTapSendAttempted = false
         shadowCoordinator.reset()
         frameIds.set(0)
         lastOfferedForAnalysisNs.set(0)
@@ -486,19 +499,8 @@ class RadarForegroundService : Service() {
                     val currentSettings = settings.get()
                     val argbImage = frameBuffer.copyFrom(image)
                     val overlayBounds = overlay.boundsNormalized(image.width, image.height)
-                    if (
-                        overlayBounds != null &&
-                        OverlayCvSafety.overlapsCritical(overlayBounds, RadarRuntime.status.value.screen)
-                    ) {
-                        recordAbortOnce("overlay-overlaps-critical-cv-region")
-                        val snapped = overlay.snapToSafeRegion(image.width, image.height)
-                        RadarRuntime.update { it.copy(message = if (snapped) {
-                            "Overlay перенесён в безопасную область · анализ продолжится"
-                        } else {
-                            "РАДАР ПРИОСТАНОВЛЕН — ПЕРЕМЕСТИТЕ ПАНЕЛЬ"
-                        }) }
-                        continue
-                    }
+                    // The user owns the overlay position. Mask its pixels from CV instead of
+                    // snapping the window away mid-drag; obscured evidence then fails closed.
                     overlayBounds?.let(argbImage::mask)
                     val observedMs = android.os.SystemClock.elapsedRealtime()
                     val nextFrameId = frameIds.incrementAndGet()
@@ -620,7 +622,10 @@ class RadarForegroundService : Service() {
                         overlayJoinState = when {
                             joinMessage != null && overlayJoinState.phase == OverlayJoinPhase.FAILED -> overlayJoinState
                             analysis.screen == ScreenState.MARCH_SCREEN &&
-                                overlayJoinState.phase == OverlayJoinPhase.OPENED -> overlayJoinState
+                                overlayJoinState.phase in setOf(
+                                    OverlayJoinPhase.MANUAL_FALLBACK,
+                                    OverlayJoinPhase.FAILED,
+                                ) -> overlayJoinState
                             !GestureActionController.connected.value -> OverlayJoinState(
                                 phase = OverlayJoinPhase.IDLE,
                                 actionsAvailable = false,
@@ -702,6 +707,10 @@ class RadarForegroundService : Service() {
                             refreshSafetyRejects = refreshCoordinator.metrics().rejectedBySafety,
                             refreshAlerts = refreshCoordinator.metrics().alerts,
                             refreshStuck = refreshCoordinator.metrics().stuck,
+                            squadDiagnostics = analysis.marchSquads.takeIf { it.isNotEmpty() }?.joinToString(" · ") { squad ->
+                                "S${squad.slotIndex}:${squad.state} ${"%.2f".format(squad.stateConfidence)}" +
+                                    if (squad.selected) " ✓" else ""
+                            },
                             averageLatencyMs = if (latencySamples == 0L) null else latencyTotalMs / latencySamples,
                             p50LatencyMs = sortedLatencies.percentile(0.50),
                             p95LatencyMs = sortedLatencies.percentile(0.95),
@@ -852,7 +861,9 @@ class RadarForegroundService : Service() {
         if (oneTapCoordinator.isActive()) return null
         val evaluation = refreshCoordinator.onFrame(
             frame = analysis,
-            mode = currentSettings.refreshMode,
+            mode = if (currentSettings.mode == RuntimeMode.ONE_TAP) {
+                RefreshMode.AUTO_REFRESH
+            } else currentSettings.refreshMode,
             expectedPackage = BuildConfig.VERIFIED_TARGET_PACKAGE,
         )
         if (evaluation.shouldAlert) emitRefreshAlert(currentSettings)
@@ -871,6 +882,7 @@ class RadarForegroundService : Service() {
                 displayWidth = captureWidth,
                 displayHeight = captureHeight,
                 verifiedPackage = BuildConfig.VERIFIED_TARGET_PACKAGE,
+                currentSourceFrameId = lastAnalyzedFrameId ?: request.sourceFrameId,
                 onAccepted = {
                     refreshCoordinator.onGestureAccepted(request.requestId)
                     updateRefreshRuntime("Refresh-жест принят Android; ждём визуальную проверку")
@@ -920,7 +932,11 @@ class RadarForegroundService : Service() {
     }
 
     private fun emitRefreshAlert(currentSettings: RadarSettings) {
-        alertFeedback.emit(currentSettings.soundEnabled, currentSettings.vibrationEnabled, vibrationMs = 90)
+        alertFeedback.emit(
+            currentSettings.soundEnabled,
+            currentSettings.vibrationEnabled,
+            currentSettings.alertSoundMode,
+        )
         getSystemService(NotificationManager::class.java).notify(
             NOTIFICATION_ID,
             notification("Доступно обновление списка"),
@@ -1007,10 +1023,14 @@ class RadarForegroundService : Service() {
     }
 
     private fun emitAlert(level: Int?, currentSettings: RadarSettings) {
-        alertFeedback.emit(currentSettings.soundEnabled, currentSettings.vibrationEnabled)
+        alertFeedback.emit(
+            currentSettings.soundEnabled,
+            currentSettings.vibrationEnabled,
+            currentSettings.alertSoundMode,
+        )
         getSystemService(NotificationManager::class.java).notify(
-            NOTIFICATION_ID,
-            notification("Новая подходящая карточка${level?.let { " · L$it" }.orEmpty()}"),
+            TARGET_ALERT_NOTIFICATION_ID,
+            targetAlertNotification(level),
         )
     }
 
@@ -1047,102 +1067,165 @@ class RadarForegroundService : Service() {
         currentSettings: RadarSettings,
     ): String? {
         if (currentSettings.mode != RuntimeMode.ONE_TAP) return null
-        when (oneTapCoordinator.onVerificationFrame(analysis)) {
-            OneTapFlowUpdate.Success -> {
-                finishOneTapAttempt(true, "Отряд открыт · отправьте его вручную", analysis)
-                return "ONE_TAP_A_SUCCESS: экран отряда подтверждён"
-            }
-            OneTapFlowUpdate.Failure -> {
-                finishOneTapAttempt(false, "Не удалось подтвердить экран отряда", analysis)
-                return "ONE_TAP_A_FAILURE: экран отряда не подтверждён"
-            }
-            OneTapFlowUpdate.AwaitingMarch -> {
-                overlayJoinState = OverlayJoinState(OverlayJoinPhase.OPENING, detail = "Открываю отряд…")
-                return "ONE_TAP_A: ждём визуальное подтверждение экрана отряда"
-            }
-            else -> Unit
-        }
         if (!oneTapCoordinator.isActive()) return null
         if (!gestureCoordinator.isIdle()) {
-            overlayJoinState = OverlayJoinState(OverlayJoinPhase.CHECKING, detail = "Жду свежий кадр…")
-            return "ONE_TAP_A: ждём завершения предыдущего действия"
+            return "ONE TAP: ждём завершения текущего действия"
         }
-        return when (val update = oneTapCoordinator.onFreshFrame(
-            analysis,
-            tracking,
-            policy,
-            BuildVariantHooks.expectedGesturePackage(applicationContext, BuildConfig.VERIFIED_TARGET_PACKAGE),
-            GestureActionController.foregroundSnapshot()?.generation ?: -1,
-            projectionSessionGeneration,
-        )) {
-            is OneTapFlowUpdate.Rejected -> {
-                finishOneTapAttempt(false, "Цель изменилась · ${update.reason.name}", analysis)
-                recordAbortOnce("one-tap-open:${update.reason.name}")
-                "ONE_TAP_A: жест отменён, ${update.reason.name}"
+        val update = oneTapCoordinator.onFrame(
+            frame = analysis,
+            tracking = tracking,
+            openPolicy = policy,
+            config = OneTapCompleteConfig(
+                squadPriority = currentSettings.squadPriority,
+                allowReturning = currentSettings.allowReturningSquads,
+                sendWhenTravelUnknown = currentSettings.sendWhenTravelUnknown,
+                safetyMarginSeconds = currentSettings.safetyMarginSeconds,
+            ),
+            expectedPackage = BuildVariantHooks.expectedGesturePackage(
+                applicationContext,
+                BuildConfig.VERIFIED_TARGET_PACKAGE,
+            ),
+            foregroundGeneration = GestureActionController.foregroundSnapshot()?.generation ?: -1,
+            projectionGeneration = projectionSessionGeneration,
+        )
+        return applyOneTapUpdate(update, analysis, tracking)
+    }
+
+    private fun applyOneTapUpdate(
+        update: OneTapCompleteUpdate,
+        analysis: FrameAnalysis? = null,
+        tracking: radar.vision.TrackingUpdate? = null,
+    ): String? = when (update) {
+        OneTapCompleteUpdate.Ignored -> null
+        is OneTapCompleteUpdate.Progress -> {
+            overlayJoinState = OverlayJoinState(update.stage.toOverlayPhase(), detail = update.detail)
+            "ONE TAP: ${update.stage.name}"
+        }
+        is OneTapCompleteUpdate.Rejected -> {
+            if (update.reason == radar.vision.OneTapRejectReason.FULL) {
+                RadarRuntime.update { it.copy(fullBeforeJoin = it.fullBeforeJoin + 1) }
             }
-            is OneTapFlowUpdate.Dispatch -> {
-                val request = update.request
-                pendingOneTapRequestId = request.requestId
+            finishOneTapAttempt(false, "Цель изменилась · ${update.reason.name}", analysis)
+            recordAbortOnce("one-tap-open:${update.reason.name}")
+            "ONE TAP: ${update.reason.name}"
+        }
+        is OneTapCompleteUpdate.Dispatch -> {
+            markOneTapMilestones(update.openVerified, update.selectionVerified)
+            dispatchOneTapGesture(update.request, analysis, tracking)
+            "ONE TAP: ${update.request.purpose.name}"
+        }
+        is OneTapCompleteUpdate.ManualFallback -> {
+            markOneTapMilestones(update.openVerified, update.squadSelected)
+            RadarRuntime.update { status ->
+                when (update.reason) {
+                    "NO_ELIGIBLE_SQUAD" -> status.copy(noSquad = status.noSquad + 1)
+                    "TOO_LATE" -> status.copy(tooLate = status.tooLate + 1)
+                    else -> status
+                }
+            }
+            val detail = when {
+                !update.openVerified -> "Не удалось подтвердить экран отряда · завершите вручную"
+                update.squadSelected -> "Отряд выбран · ${update.reason} · нажмите Отправиться вручную"
+                else -> "Штурм открыт · ${update.reason} · завершите вручную"
+            }
+            finishOneTapAttempt(false, detail, analysis, manualFallback = true)
+            "ONE TAP MANUAL: ${update.reason}"
+        }
+        is OneTapCompleteUpdate.Success -> {
+            markOneTapMilestones(openVerified = true, selectionVerified = true)
+            RadarRuntime.update {
+                it.copy(
+                    sendVerifiedSuccesses = it.sendVerifiedSuccesses + 1,
+                    joinSuccesses = it.joinSuccesses + 1,
+                    message = "ONE_TAP_JOIN_SUCCESS",
+                )
+            }
+            overlayJoinState = OverlayJoinState(OverlayJoinPhase.SUCCESS, detail = "Отряд отправлен ✓")
+            oneTapAttemptStore.recordResult(pendingOneTapRequestId, true, "Отряд отправлен", analysis)
+            pendingOneTapRequestId = null
+            "ONE TAP SUCCESS"
+        }
+        is OneTapCompleteUpdate.Failure -> {
+            finishOneTapAttempt(false, update.reason, analysis)
+            "ONE TAP FAILURE: ${update.reason}"
+        }
+    }
+
+    private fun dispatchOneTapGesture(
+        request: radar.vision.GestureRequest,
+        analysis: FrameAnalysis?,
+        tracking: radar.vision.TrackingUpdate?,
+    ) {
+        if (request.purpose == GesturePurpose.JOIN_PLUS) {
+            pendingOneTapRequestId = request.requestId
+            analysis?.let { frame ->
                 oneTapAttemptStore.recordDispatch(
                     request,
-                    tracking.active.firstOrNull { it.id == request.rallyId }?.candidate,
+                    tracking?.active?.firstOrNull { it.id == request.rallyId }?.candidate,
                 )
-                if (!gestureCoordinator.tryAcquire(request)) {
-                    oneTapCoordinator.onGestureCompleted(
-                        request.requestId,
-                        completed = false,
-                        completedAtMonotonicMs = analysis.observedAtMonotonicMs,
-                    )
-                    finishOneTapAttempt(false, "Другое действие ещё выполняется", analysis)
-                    return "ONE_TAP_A: gesture coordinator busy"
-                }
-                overlayJoinState = OverlayJoinState(OverlayJoinPhase.OPENING, detail = "Открываю отряд…")
-                val dispatchGeneration = actionInvalidationGeneration.get()
-                val dispatchAction = Runnable {
-                    if (dispatchGeneration != actionInvalidationGeneration.get() || !oneTapCoordinator.isActive()) {
-                        Log.w("ONE_TAP_A", "scheduled gesture cancelled before dispatch")
-                    } else GestureActionController.dispatch(
-                    request = request,
-                    displayWidth = captureWidth,
-                    displayHeight = captureHeight,
-                    verifiedPackage = BuildConfig.VERIFIED_TARGET_PACKAGE,
-                    onAccepted = {
-                        RadarRuntime.update { it.copy(message = "ONE_TAP_A: жест принят Android; проверяю экран") }
-                    },
-                    onRejected = { reason ->
-                        gestureCoordinator.release(request.requestId)
-                        oneTapCoordinator.onGestureCompleted(
-                            request.requestId,
-                            completed = false,
-                            completedAtMonotonicMs = android.os.SystemClock.elapsedRealtime(),
-                        )
-                        safetyRejectCount++
-                        finishOneTapAttempt(false, "Действие отклонено · $reason")
-                        recordAbortOnce("one-tap-gesture:$reason")
-                        RadarRuntime.update { it.copy(message = "ONE_TAP_A: жест отклонён безопасностью: $reason") }
-                    },
-                    onCompleted = { completed, completedAt ->
-                        gestureCoordinator.release(request.requestId)
-                        when (oneTapCoordinator.onGestureCompleted(request.requestId, completed, completedAt)) {
-                            OneTapFlowUpdate.Failure -> finishOneTapAttempt(false, "Android не выполнил действие")
-                            OneTapFlowUpdate.AwaitingMarch -> {
-                                overlayJoinState = OverlayJoinState(
-                                    OverlayJoinPhase.OPENING,
-                                    detail = "Проверяю экран отряда…",
-                                )
-                            }
-                            else -> Unit
-                        }
-                    },
-                    )
-                }
-                val dispatchDelayMs = BuildVariantHooks.dispatchDelayMs(applicationContext)
-                if (dispatchDelayMs > 0) {
-                    Handler(Looper.getMainLooper()).postDelayed(dispatchAction, dispatchDelayMs)
-                } else dispatchAction.run()
-                "ONE_TAP_A: открываю выбранный rally"
             }
-            else -> "ONE_TAP_A: ожидается свежий кадр"
+        }
+        RadarRuntime.update { status ->
+            when (request.purpose) {
+                GesturePurpose.SELECT_SQUAD -> status.copy(
+                    squadSelectionAttempts = status.squadSelectionAttempts + 1,
+                    message = "Выбираю отряд ${request.squadSlotIndex}",
+                ).also { oneTapSelectionAttempted = true }
+                GesturePurpose.SEND -> status.copy(
+                    sendAttempts = status.sendAttempts + 1,
+                    joinAttempts = status.joinAttempts + 1,
+                    message = "Отправляю отряд",
+                ).also { oneTapSendAttempted = true }
+                else -> status
+            }
+        }
+        if (!gestureCoordinator.tryAcquire(request)) {
+            applyOneTapUpdate(oneTapCoordinator.cancel("GESTURE_COORDINATOR_BUSY"), analysis, tracking)
+            return
+        }
+        overlayJoinState = OverlayJoinState(request.purpose.toOverlayPhase(), detail = request.purpose.progressText())
+        val dispatchGeneration = actionInvalidationGeneration.get()
+        val dispatchAction = Runnable {
+            if (dispatchGeneration != actionInvalidationGeneration.get() || !oneTapCoordinator.isActive()) {
+                gestureCoordinator.release(request.requestId)
+                Log.w("ONE_TAP", "scheduled gesture cancelled before dispatch")
+            } else GestureActionController.dispatch(
+                request = request,
+                displayWidth = captureWidth,
+                displayHeight = captureHeight,
+                verifiedPackage = BuildConfig.VERIFIED_TARGET_PACKAGE,
+                activeOneTapFlowId = oneTapCoordinator.activeFlowId(),
+                currentSourceFrameId = lastAnalyzedFrameId ?: request.sourceFrameId,
+                onAccepted = { RadarRuntime.update { it.copy(message = "ONE TAP: жест принят; проверяю результат") } },
+                onRejected = { reason ->
+                    gestureCoordinator.release(request.requestId)
+                    safetyRejectCount++
+                    recordAbortOnce("one-tap-gesture:$reason")
+                    applyOneTapUpdate(oneTapCoordinator.cancel("SAFETY_$reason"), analysis, tracking)
+                },
+                onCompleted = { completed, completedAt ->
+                    gestureCoordinator.release(request.requestId)
+                    applyOneTapUpdate(
+                        oneTapCoordinator.onGestureCompleted(request.requestId, completed, completedAt),
+                        analysis,
+                        tracking,
+                    )
+                },
+            )
+        }
+        val dispatchDelayMs = BuildVariantHooks.dispatchDelayMs(applicationContext)
+        if (dispatchDelayMs > 0) Handler(Looper.getMainLooper()).postDelayed(dispatchAction, dispatchDelayMs)
+        else dispatchAction.run()
+    }
+
+    private fun markOneTapMilestones(openVerified: Boolean, selectionVerified: Boolean) {
+        if (openVerified && !oneTapOpenCounted) {
+            oneTapOpenCounted = true
+            RadarRuntime.update { it.copy(oneTapOpenSuccesses = it.oneTapOpenSuccesses + 1) }
+        }
+        if (selectionVerified && !oneTapSelectionCounted) {
+            oneTapSelectionCounted = true
+            RadarRuntime.update { it.copy(squadSelectionSuccesses = it.squadSelectionSuccesses + 1) }
         }
     }
 
@@ -1170,6 +1253,10 @@ class RadarForegroundService : Service() {
             ),
         )
         if (!accepted) return
+        oneTapOpenCounted = false
+        oneTapSelectionCounted = false
+        oneTapSelectionAttempted = false
+        oneTapSendAttempted = false
         RadarRuntime.update { it.copy(oneTapOpenAttempts = it.oneTapOpenAttempts + 1) }
         refreshCoordinator.cancelPending()
         GestureActionController.cancelAll()
@@ -1177,17 +1264,34 @@ class RadarForegroundService : Service() {
         RadarRuntime.update { it.copy(message = "ONE_TAP_A: проверяю выбранную цель на свежем кадре") }
     }
 
-    private fun finishOneTapAttempt(success: Boolean, detail: String, postFrame: FrameAnalysis? = null) {
+    private fun finishOneTapAttempt(
+        success: Boolean,
+        detail: String,
+        postFrame: FrameAnalysis? = null,
+        manualFallback: Boolean = false,
+    ) {
         overlayJoinState = OverlayJoinState(
-            phase = if (success) OverlayJoinPhase.OPENED else OverlayJoinPhase.FAILED,
+            phase = when {
+                success -> OverlayJoinPhase.SUCCESS
+                manualFallback -> OverlayJoinPhase.MANUAL_FALLBACK
+                else -> OverlayJoinPhase.FAILED
+            },
             actionsAvailable = GestureActionController.connected.value,
             detail = detail,
         )
         RadarRuntime.update {
             it.copy(
-                oneTapOpenSuccesses = it.oneTapOpenSuccesses + if (success) 1 else 0,
-                oneTapOpenFailures = it.oneTapOpenFailures + if (success) 0 else 1,
-                message = if (success) "ONE_TAP_A_SUCCESS" else "ONE_TAP_A_FAILURE",
+                oneTapOpenSuccesses = it.oneTapOpenSuccesses + if (success && !oneTapOpenCounted) 1 else 0,
+                oneTapOpenFailures = it.oneTapOpenFailures + if (!success && !oneTapOpenCounted) 1 else 0,
+                squadSelectionFailures = it.squadSelectionFailures +
+                    if (!success && oneTapSelectionAttempted && !oneTapSelectionCounted) 1 else 0,
+                sendFailures = it.sendFailures + if (!success && oneTapSendAttempted) 1 else 0,
+                joinFailures = it.joinFailures + if (!success && oneTapSendAttempted) 1 else 0,
+                message = when {
+                    success -> "ONE_TAP_JOIN_SUCCESS"
+                    manualFallback -> "ONE_TAP_MANUAL_FALLBACK"
+                    else -> "ONE_TAP_FAILURE"
+                },
             )
         }
         oneTapAttemptStore.recordResult(pendingOneTapRequestId, success, detail, postFrame)
@@ -1196,6 +1300,25 @@ class RadarForegroundService : Service() {
 
     private fun openAccessibilitySettings() {
         startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    private fun stopFromUi() {
+        if (!stopping.compareAndSet(false, true)) return
+        cancelAllActions("ONE TAP остановлен пользователем")
+        serviceScope.cancel()
+        overlay.close()
+        capture?.close()
+        capture = null
+        projection?.stop()
+        projection = null
+        if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
+        else @Suppress("DEPRECATION") stopForeground(true)
+        stopSelf()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        stopFromUi()
+        super.onTaskRemoved(rootIntent)
     }
 
     private fun recordLatency(value: Long) {
@@ -1259,6 +1382,7 @@ class RadarForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        stopping.set(true)
         refreshCoordinator.cancelPending()
         oneTapCoordinator.cancel()
         gestureCoordinator.cancelAll()
@@ -1297,7 +1421,7 @@ class RadarForegroundService : Service() {
         val stop = PendingIntent.getService(
             this, 2, stopIntent(this), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_RADAR_SERVICE)
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .setContentTitle("Rally Helper")
             .setContentText(text)
@@ -1317,10 +1441,26 @@ class RadarForegroundService : Service() {
         return builder.addAction(0, "Остановить", stop).build()
     }
 
-    private fun createNotificationChannel() {
-        getSystemService(NotificationManager::class.java).createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Radar", NotificationManager.IMPORTANCE_LOW),
+    private fun targetAlertNotification(level: Int?): Notification {
+        val open = PendingIntent.getActivity(
+            this,
+            11,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        return NotificationCompat.Builder(this, CHANNEL_RALLY_ALERTS)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("Подходящая цель${level?.let { " · ур.$it" }.orEmpty()}")
+            .setContentText("Есть место · нажмите ВСТУПИТЬ")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setAutoCancel(true)
+            .setContentIntent(open)
+            .build()
+    }
+
+    private fun createNotificationChannel() {
+        ensureNotificationChannels(this)
     }
 
     private fun displayMetrics(): DisplayMetrics {
@@ -1346,8 +1486,29 @@ class RadarForegroundService : Service() {
         private const val EXTRA_CAPTURE_VALUE = "capture_value"
         private const val EXTRA_CAPTURE_SPLIT = "capture_split"
         private const val EXTRA_GUIDED_CASE = "guided_case"
-        private const val CHANNEL_ID = "radar"
+        const val CHANNEL_RADAR_SERVICE = "radar_service"
+        const val CHANNEL_RALLY_ALERTS = "target_alerts_v2"
         private const val NOTIFICATION_ID = 42
+        private const val TARGET_ALERT_NOTIFICATION_ID = 43
+
+        fun ensureNotificationChannels(context: Context) {
+            context.getSystemService(NotificationManager::class.java).apply {
+                createNotificationChannel(
+                    NotificationChannel(CHANNEL_RADAR_SERVICE, "Radar service", NotificationManager.IMPORTANCE_LOW).apply {
+                        setSound(null, null)
+                        enableVibration(false)
+                    },
+                )
+                createNotificationChannel(
+                    NotificationChannel(CHANNEL_RALLY_ALERTS, "Target alerts", NotificationManager.IMPORTANCE_HIGH).apply {
+                        // The app-local SYSTEM/MEDIA selector owns audible/vibration feedback,
+                        // so this high-importance notification must not produce a second cue.
+                        setSound(null, null)
+                        enableVibration(false)
+                    },
+                )
+            }
+        }
 
         fun startIntent(context: Context, resultCode: Int, data: Intent) =
             Intent(context, RadarForegroundService::class.java).setAction(ACTION_START)
@@ -1374,6 +1535,34 @@ class RadarForegroundService : Service() {
 }
 
 private fun RuntimeMode.isAutoLoop(): Boolean = this == RuntimeMode.AUTO || this == RuntimeMode.SHADOW_AUTO
+
+private fun OneTapCompleteStage.toOverlayPhase(): OverlayJoinPhase = when (this) {
+    OneTapCompleteStage.AWAITING_FRESH_RALLY -> OverlayJoinPhase.CHECKING
+    OneTapCompleteStage.DISPATCHING_JOIN_PLUS, OneTapCompleteStage.AWAITING_MARCH -> OverlayJoinPhase.OPENING
+    OneTapCompleteStage.ANALYZING_SQUADS -> OverlayJoinPhase.ANALYZING_SQUADS
+    OneTapCompleteStage.SELECTING_SQUAD, OneTapCompleteStage.VERIFYING_SQUAD -> OverlayJoinPhase.SELECTING_SQUAD
+    OneTapCompleteStage.CHECKING_SEND -> OverlayJoinPhase.CHECKING_TIME
+    OneTapCompleteStage.DISPATCHING_SEND -> OverlayJoinPhase.SENDING
+    OneTapCompleteStage.VERIFYING_SEND -> OverlayJoinPhase.VERIFYING_SEND
+    OneTapCompleteStage.SUCCESS -> OverlayJoinPhase.SUCCESS
+    OneTapCompleteStage.MANUAL_FALLBACK -> OverlayJoinPhase.MANUAL_FALLBACK
+    OneTapCompleteStage.FAILED -> OverlayJoinPhase.FAILED
+    OneTapCompleteStage.IDLE -> OverlayJoinPhase.IDLE
+}
+
+private fun GesturePurpose.toOverlayPhase(): OverlayJoinPhase = when (this) {
+    GesturePurpose.JOIN_PLUS -> OverlayJoinPhase.OPENING
+    GesturePurpose.SELECT_SQUAD -> OverlayJoinPhase.SELECTING_SQUAD
+    GesturePurpose.SEND -> OverlayJoinPhase.SENDING
+    GesturePurpose.REFRESH -> OverlayJoinPhase.CHECKING
+}
+
+private fun GesturePurpose.progressText(): String = when (this) {
+    GesturePurpose.JOIN_PLUS -> "Открываю штурм…"
+    GesturePurpose.SELECT_SQUAD -> "Выбираю отряд…"
+    GesturePurpose.SEND -> "Отправляю…"
+    GesturePurpose.REFRESH -> "Обновляю список…"
+}
 
 private fun RadarStatus.toOverlayCounters(
     skipped: Long = policySkipped,

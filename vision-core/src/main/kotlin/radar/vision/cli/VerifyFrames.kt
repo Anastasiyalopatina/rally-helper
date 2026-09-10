@@ -5,6 +5,7 @@ import radar.vision.BossType
 import radar.vision.DetectorTemplates
 import radar.vision.FrameAnalysis
 import radar.vision.JoinedState
+import radar.vision.MarchSquadState
 import radar.vision.RallyDetector
 import radar.vision.ReferenceTemplate
 import radar.vision.ScreenState
@@ -89,6 +90,9 @@ private data class Expected(
     val travelTimeSeconds: Int? = null,
     val travelTimeUnknown: Boolean? = null,
     val sendButtonFound: Boolean? = null,
+    val marchStates: List<MarchSquadState>? = null,
+    val selectedSquad: Int? = null,
+    val troopsPresent: Boolean? = null,
 )
 
 private data class Case(val file: String, val expected: Expected)
@@ -243,6 +247,9 @@ private fun parseCase(file: File): Case {
             travelTimeSeconds = int("travelTimeSeconds"),
             travelTimeUnknown = bool("travelTimeUnknown"),
             sendButtonFound = bool("sendButtonFound"),
+            marchStates = string("marchStates")?.split(',')?.map(MarchSquadState::valueOf),
+            selectedSquad = int("selectedSquad"),
+            troopsPresent = bool("troopsPresent"),
         ),
     )
 }
@@ -262,13 +269,18 @@ private fun compare(expected: Expected, actual: FrameAnalysis): List<String> = b
     check("travelTimeSeconds", expected.travelTimeSeconds, actual.travelTime.value)
     check("travelTimeUnknown", expected.travelTimeUnknown, !actual.travelTime.accepted)
     check("sendButtonFound", expected.sendButtonFound, actual.sendButtonFound)
+    check("marchStates", expected.marchStates, actual.marchSquads.map { it.state })
+    check("selectedSquad", expected.selectedSquad, actual.marchSquads.singleOrNull { it.selected }?.slotIndex)
+    check("troopsPresent", expected.troopsPresent, actual.troopSanity.nonEmpty)
 }
 
 private fun summary(a: FrameAnalysis): String = when (a.screen) {
     ScreenState.EVENT_LIST -> a.rallies.joinToString(prefix = "rallies=[", postfix = "]") {
         "boss=${it.bossType} level=${it.level} count=${it.participantCount}/${it.capacity} timer=${it.remainingSeconds} plus=${it.joinPlusBounds.size} state=${it.joinedState} conf=${it.confidences} diag=${a.diagnostics.filterKeys { key -> key.startsWith("card") }}"
     }
-    ScreenState.MARCH_SCREEN -> "travel=${a.travelTime.value ?: "UNKNOWN"} conf=${a.travelTime.confidence} send=${a.sendButtonFound}"
+    ScreenState.MARCH_SCREEN -> "travel=${a.travelTime.value ?: "UNKNOWN"} conf=${a.travelTime.confidence} " +
+        "send=${a.sendButtonFound} squads=${a.marchSquads.map { "${it.slotIndex}:${it.state}:${it.selected}" }} " +
+        "troops=${a.troopSanity.nonEmpty}"
     ScreenState.WORLD_MAP -> "squadRows=${a.squads.size} states=${a.squads.map { it.state }}"
     ScreenState.UNKNOWN -> "unknown diagnostics=${a.diagnostics}"
 }

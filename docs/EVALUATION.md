@@ -21,10 +21,10 @@
 | Wrong package / stale / expired gesture rejection | pass |
 | Persistent refresh bounded to two requests | pass |
 | Deterministic replay infrastructure | pass |
-| Room migrations 1→2 / 2→3 / 1→3 / 3→4 / 1→4 | 5/5 pass on physical device |
+| Room migrations through schema v6, including 5→6 and 1→6 | 9/9 pass on physical device |
 | Raw screenshots in debug APK | 0 |
 | Android compile / lint | pass |
-| Room schema export | v4 |
+| Room schema export | v6 |
 
 Synthetic mutations cover brightness, contrast, slight scale, translation, JPEG compression, mild blur, inset shift, and harmless occlusion. They are robustness tests, not a real holdout.
 

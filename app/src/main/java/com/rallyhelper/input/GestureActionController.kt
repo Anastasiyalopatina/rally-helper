@@ -41,6 +41,8 @@ object GestureActionController {
         displayWidth: Int,
         displayHeight: Int,
         verifiedPackage: String,
+        activeOneTapFlowId: String? = null,
+        currentSourceFrameId: Long = request.sourceFrameId,
         onAccepted: () -> Unit,
         onRejected: (GestureRejectReason) -> Unit,
         onCompleted: (Boolean, Long) -> Unit,
@@ -61,6 +63,8 @@ object GestureActionController {
                 displayWidth = displayWidth,
                 displayHeight = displayHeight,
                 verifiedPackage = verifiedPackage,
+                activeOneTapFlowId = activeOneTapFlowId,
+                currentSourceFrameId = currentSourceFrameId,
                 onAccepted = onAccepted,
                 onRejected = onRejected,
                 onCompleted = onCompleted,
@@ -153,6 +157,8 @@ class RefreshAccessibilityService : AccessibilityService() {
         displayWidth: Int,
         displayHeight: Int,
         verifiedPackage: String,
+        activeOneTapFlowId: String?,
+        currentSourceFrameId: Long,
         onAccepted: () -> Unit,
         onRejected: (GestureRejectReason) -> Unit,
         onCompleted: (Boolean, Long) -> Unit,
@@ -169,6 +175,8 @@ class RefreshAccessibilityService : AccessibilityService() {
             gestureInFlight = inFlightRequestId != null,
             currentForegroundGeneration = foregroundGeneration,
             currentProjectionSessionGeneration = GestureActionController.currentProjectionSessionGeneration(),
+            activeOneTapFlowId = activeOneTapFlowId,
+            currentSourceFrameId = currentSourceFrameId,
         )
         if (!decision.allowed) {
             cancelledRequestIds.remove(request.requestId)

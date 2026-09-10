@@ -31,6 +31,12 @@ class RadarRepository private constructor(private val database: RadarDatabase) {
             summary.oneTapOpenAttempts,
             summary.oneTapOpenSuccesses,
             summary.oneTapOpenFailures,
+            summary.squadSelectionAttempts,
+            summary.squadSelectionSuccesses,
+            summary.squadSelectionFailures,
+            summary.sendAttempts,
+            summary.sendVerifiedSuccesses,
+            summary.sendFailures,
             summary.joinAttempts,
             summary.joinSuccesses,
             summary.joinFailures,
@@ -92,7 +98,7 @@ class RadarRepository private constructor(private val database: RadarDatabase) {
     companion object {
         fun create(context: Context): RadarRepository = RadarRepository(
             Room.databaseBuilder(context, RadarDatabase::class.java, "radar.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .build(),
         )
 
@@ -153,6 +159,17 @@ class RadarRepository private constructor(private val database: RadarDatabase) {
                         "oneTapOpenSuccesses = CASE WHEN mode = 'ONE_TAP' THEN actualSuccesses ELSE 0 END, " +
                         "oneTapOpenFailures = CASE WHEN mode = 'ONE_TAP' THEN actualFailures ELSE 0 END",
                 )
+            }
+        }
+
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE RadarSession ADD COLUMN squadSelectionAttempts INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE RadarSession ADD COLUMN squadSelectionSuccesses INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE RadarSession ADD COLUMN squadSelectionFailures INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE RadarSession ADD COLUMN sendAttempts INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE RadarSession ADD COLUMN sendVerifiedSuccesses INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE RadarSession ADD COLUMN sendFailures INTEGER NOT NULL DEFAULT 0")
             }
         }
     }

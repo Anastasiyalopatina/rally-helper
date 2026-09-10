@@ -17,6 +17,6 @@ Date: 2026-09-10.
 | ONE_TAP gesture implementation | NOT_PRESENT |
 | ONE_TAP live test | BLOCKED |
 
-Those rows describe the earlier candidate only. The current runtime has a purpose-scoped `JOIN_PLUS` path, fresh-identity revalidation, foreground/projection generation guards and post-gesture screen verification. It still has no `SEND` path and cannot retrieve window content.
+Those rows describe the earlier candidate only. The current runtime has purpose-scoped `JOIN_PLUS`, `SELECT_SQUAD`, and `SEND` paths, fresh-identity revalidation, foreground/source-frame/flow/projection guards, and post-send screen verification. It cannot retrieve window content.
 
-Current deterministic overlay-to-physical-tap integration: **PASS**. Real-target recognition and the first supervised live attempt: **PENDING / NOT_OBSERVED**. These are separate claims; the deterministic target is not CV evidence.
+Current complete state-machine matrix M1–M16: **PASS** in core tests. The expanded deterministic physical target and real-target squad/send observations are separate bounded validation items; deterministic fixtures are not CV evidence.

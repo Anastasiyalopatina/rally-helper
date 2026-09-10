@@ -1,29 +1,33 @@
 # Current state
 
-Date: 2026-09-10. Canonical status for Phase D1.
+Date: 2026-09-10. Canonical status for Phase D2.
 
 ## Product modes
 
-- `RADAR`: **ACTIVE**. Confirmed targets emit one local sound/vibration alert per `RallyId`. Alert policy is independent from action safety, so unknown participant OCR may still alert when the visual anchors are strong.
-- `ONE_TAP_A`: **ACTIVE / EXPERIMENTAL**. The overlay is automatic in this mode. A user tap starts one fresh-frame validation of the displayed `RallyId`, then may press the deterministic leftmost valid green plus inside that same current card. Success requires a later confirmed march screen.
-- `ONE_TAP_B`: **NOT_IMPLEMENTED**. Send remains manual.
-- `AUTO`: **LOCKED**. No automatic join/send path exists.
+- `RADAR`: **ACTIVE**. Confirmed targets produce one local alert per stable identity.
+- `ONE TAP`: **ACTIVE / EXPERIMENTAL**. One explicit overlay tap authorizes one bounded flow: fresh target revalidation, open, squad selection, travel/safety check, send, and post-send verification. Any unknown or changed evidence stops with manual fallback.
+- `AUTO`: **LOCKED**. No unattended join/send path is exposed.
 
-The deterministic Android integration path is **PASS** on a physical device. Recognition in the real target application is a separate evidence track; the first supervised live opportunity remains **PENDING / NOT_OBSERVED**.
+The overlay is compact (`ONE TAP`, action, emergency close), draggable across the display, and removed immediately on STOP, task dismissal, service destruction, or projection loss. A lifecycle revision prevents queued updates from recreating a closed window; a process-wide owner prevents duplicate overlay instances.
 
 ## Input safety
 
-- `RefreshMode` is `OFF`, `ALERT_ONLY`, or `AUTO_REFRESH`; the default is `OFF`.
-- Runtime gestures are purpose-scoped as `REFRESH` or `JOIN_PLUS`. `SEND` is defined but rejected by the Accessibility gate.
-- Every `GestureRequest` contains its purpose, normalized point, source frame, optional `RallyId`, creation/expiry times, expected package, expected screen, foreground generation and projection-session generation. The maximum request TTL is 750 ms.
-- The Accessibility service listens only for foreground window-state changes, cannot retrieve window content, and rejects requests unless the locally verified target package is foreground and no intervening window-state or projection-session generation change occurred.
-- ONE_TAP never reuses displayed geometry. It waits for a newer analyzed frame and resolves the same `RallyId`; disappearance or replacement produces no gesture.
-- A global gesture coordinator permits only one in-flight gesture. A user join suppresses refresh until the join flow reaches a terminal state.
-- Android gesture completion is not success. Refresh requires a later list change; ONE_TAP_A requires a later confirmed march screen within two seconds.
+- Gestures are purpose-scoped as `REFRESH`, `JOIN_PLUS`, `SELECT_SQUAD`, or `SEND`.
+- Every request has a maximum 750 ms TTL and is bound to a source frame, verified foreground package/generation, projection generation, and single-flight coordinator lease.
+- Squad selection uses exactly three slots. `FREE` is eligible; `RETURNING` additionally requires the expected icon/timer/occupied combination and an enabled user setting. `BUSY` and `UNKNOWN` always fail closed.
+- `SEND` additionally requires a freshly verified selected squad, enabled send control, non-empty troop evidence, and `travel + safety margin < estimated remaining` when travel is known. Unknown travel defaults to manual fallback.
+- Android gesture completion is not treated as success. A send succeeds only after a later verified world-map frame.
+- ONE TAP suppresses refresh while its flow is active. Refresh itself is dispatched only from a fresh frame containing the detected control.
+- Capture visibility loss, projection termination, geometry invalidation, foreground change, stop, and task dismissal cancel all pending actions.
+
+## Alerts and settings
+
+The foreground-service notification is low importance and silent. Target alerts use a separate high-importance channel plus optional app-local audio and vibration. `SYSTEM` and `MEDIA` audio paths use the same approximately 0.85-second two-tone cue. Squad priority defaults to `1 → 2 → 3`; returning squads are configurable; unknown-travel fallback is explicitly experimental and defaults off. Delay controls are limited to 0–30 seconds.
 
 ## Verification
 
-- `:vision-core:test` contains 20 ONE_TAP_A unit cases covering valid dispatch, identity replacement, negative target states, foreground/expiry guards, double tap, visibility/geometry/projection cancellation, refresh priority, overlay preference and post-gesture visual verification.
-- `:vision-core:verifyCoreLogic` retains tracker, alert/action split, refresh and state-machine invariants.
-- `oneTapIntegrationDebug` and the separate `:test-target` module exercise the real overlay-to-Accessibility path without entering the production APK. The physical E1–E10 matrix passed; details and limits are in `DEVICE_TEST_REPORT.md`.
-- Production preflight and the installed final SHA are recorded after the final build in `DEVICE_TEST_REPORT.md`.
+- ONE_TAP_A regressions and the complete M1–M16 state-machine matrix pass in `:vision-core:test`.
+- The deterministic Android target models three squad slots, selection, send, and verified/unverified post-send transitions; it is excluded from production.
+- Room schema v6 and migrations through 1→6 pass on a physical Android device.
+- Production and integration variants compile successfully. Raw calibration assets and integration markers are rejected from production by build checks.
+- Real-target squad classification and a real verified send remain bounded live-observation items; weak evidence falls back after opening instead of disabling the working open step.

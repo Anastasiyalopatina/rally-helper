@@ -108,3 +108,15 @@ This matrix proves the integration plumbing: overlay → fresh-frame state machi
 The explicit signal button invoked the same audio/vibration path as a real alert. System logs confirmed both requests, but the connected phone's current notification profile muted the audio stream and rejected vibration. Application pipeline: PASS. Noticeable device output under the current profile: FAIL; change the phone's notification volume/vibration setting before supervised use.
 
 The real-target preflight and final installed production SHA are filled after the final production build. No real opportunity was required or observed during this bounded engineering test.
+
+## Phase D2 bounded validation
+
+- Complete ONE TAP state-machine matrix M1–M16: **PASS** in deterministic core tests.
+- Expanded physical test target: builds successfully and models three squad slots, selection taps, send taps, travel/troop controls, and verified/unverified result transitions. A complete physical M1–M16 pass is still pending; no result is inferred from compilation.
+- Room schema v6 migrations, including 5→6 and 1→6: **PASS**, 9/9 instrumentation tests on a physical device.
+- Local real march reference: `MARCH_SCREEN`, travel 7 seconds, send control present, troops present, squad states `RETURNING / FREE / FREE`, selected squad 1. This is calibration evidence, not an independent holdout.
+- Overlay lifecycle hardening: production build installed. STOP now invalidates queued UI updates, removes the window immediately, stops foreground state, and prevents a second in-process owner. Post-fix user reproduction check is pending.
+- Alert `SYSTEM`: app-local pipeline compiled; the user previously confirmed the audible path under the normal phone profile. The new longer cue still needs an explicit listening check. `MEDIA`: not run. Vibration: not independently reconfirmed.
+- Real target: the open transition and march screen were observed in earlier bounded work. Real automatic squad selection and verified send are not yet observed.
+
+No long endurance run, rally quota, raw frame export, device identifier, or target package was added to this public report.

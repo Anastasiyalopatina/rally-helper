@@ -14,11 +14,16 @@ import radar.vision.RefreshMode
 private val Context.radarDataStore by preferencesDataStore("radar_settings")
 
 enum class DebugCaptureMode { OFF, FAILURES, ALL_TARGETS }
+enum class AlertSoundMode { SYSTEM, MEDIA }
 
 data class RadarSettings(
     val selectedLevels: Set<Int> = setOf(5, 10),
     val soundEnabled: Boolean = true,
+    val alertSoundMode: AlertSoundMode = AlertSoundMode.SYSTEM,
     val vibrationEnabled: Boolean = true,
+    val squadPriority: List<Int> = listOf(1, 2, 3),
+    val allowReturningSquads: Boolean = true,
+    val sendWhenTravelUnknown: Boolean = false,
     val overlayEnabled: Boolean = false,
     val mode: RuntimeMode = RuntimeMode.RADAR,
     val refreshMode: RefreshMode = RefreshMode.OFF,
@@ -40,7 +45,13 @@ class RadarSettingsStore(private val context: Context) {
             selectedLevels = values[Keys.LEVELS]?.split(',')?.mapNotNull(String::toIntOrNull)?.toSet()
                 ?: setOf(5, 10),
             soundEnabled = values[Keys.SOUND] ?: true,
+            alertSoundMode = values[Keys.SOUND_MODE]?.let { runCatching { AlertSoundMode.valueOf(it) }.getOrNull() }
+                ?: AlertSoundMode.SYSTEM,
             vibrationEnabled = values[Keys.VIBRATION] ?: true,
+            squadPriority = values[Keys.SQUAD_PRIORITY]?.split(',')?.mapNotNull(String::toIntOrNull)
+                ?.takeIf { it.toSet() == setOf(1, 2, 3) } ?: listOf(1, 2, 3),
+            allowReturningSquads = values[Keys.ALLOW_RETURNING] ?: true,
+            sendWhenTravelUnknown = values[Keys.SEND_UNKNOWN_TRAVEL] ?: false,
             overlayEnabled = values[Keys.OVERLAY] ?: false,
             mode = values[Keys.MODE]?.let { runCatching { RuntimeMode.valueOf(it) }.getOrNull() }
                 ?: RuntimeMode.RADAR,
@@ -81,6 +92,23 @@ class RadarSettingsStore(private val context: Context) {
 
     suspend fun setSoundEnabled(enabled: Boolean) {
         context.radarDataStore.edit { it[Keys.SOUND] = enabled }
+    }
+
+    suspend fun setAlertSoundMode(mode: AlertSoundMode) {
+        context.radarDataStore.edit { it[Keys.SOUND_MODE] = mode.name }
+    }
+
+    suspend fun setSquadPriority(priority: List<Int>) {
+        require(priority.toSet() == setOf(1, 2, 3))
+        context.radarDataStore.edit { it[Keys.SQUAD_PRIORITY] = priority.joinToString(",") }
+    }
+
+    suspend fun setAllowReturningSquads(enabled: Boolean) {
+        context.radarDataStore.edit { it[Keys.ALLOW_RETURNING] = enabled }
+    }
+
+    suspend fun setSendWhenTravelUnknown(enabled: Boolean) {
+        context.radarDataStore.edit { it[Keys.SEND_UNKNOWN_TRAVEL] = enabled }
     }
 
     suspend fun setVibrationEnabled(enabled: Boolean) {
@@ -124,7 +152,11 @@ class RadarSettingsStore(private val context: Context) {
     private object Keys {
         val LEVELS = stringPreferencesKey("selected_levels")
         val SOUND = booleanPreferencesKey("sound_enabled")
+        val SOUND_MODE = stringPreferencesKey("alert_sound_mode")
         val VIBRATION = booleanPreferencesKey("vibration_enabled")
+        val SQUAD_PRIORITY = stringPreferencesKey("squad_priority")
+        val ALLOW_RETURNING = booleanPreferencesKey("allow_returning_squads")
+        val SEND_UNKNOWN_TRAVEL = booleanPreferencesKey("send_when_travel_unknown")
         val OVERLAY = booleanPreferencesKey("overlay_enabled")
         val MODE = stringPreferencesKey("runtime_mode")
         val REFRESH_MODE = stringPreferencesKey("refresh_mode")
