@@ -11,7 +11,9 @@ Runtime observation flow:
 
 `RadarSettingsStore` is loaded synchronously before a capture session starts and remains the live source of truth while capture is active.
 
-The ordinary product surface exposes `RADAR`, `ONE_TAP` and `AUTO`; `SHADOW_AUTO` is isolated under developer settings. The Shadow coordinator owns deterministic single-target selection, monotonic delay, fresh-frame revalidation and policy completion. It has no input API. Radar alerts may accept high-confidence evidence when participant OCR is unknown, while the action policy always remains strict. No accessibility service or automated input is present in the current build, so `ONE_TAP` and `AUTO` remain release-gated.
+The ordinary product surface exposes `RADAR`, `ONE_TAP` and `AUTO`; `SHADOW_AUTO` is isolated under developer settings. The Shadow coordinator owns deterministic single-target selection, monotonic delay, fresh-frame revalidation and policy completion. It has no input API. Radar alerts may accept high-confidence evidence when participant OCR is unknown, while the action policy always remains strict. A low-level Accessibility bridge is limited to the detected refresh control on a high-confidence event-list screen; it contains no selection, join or send logic. `ONE_TAP` and `AUTO` join/send actions remain release-gated.
+
+Refresh requests are single-flight per visible appearance. The coordinator rearms after two consecutive absent frames, retries a stuck control only after a bounded timeout, and does not rearm on one uncertain frame.
 
 PAUSE cancels pending automation and requires a fresh frame after RESUME; it does not stop projection, Radar analysis or alerts. STOP ends the service. Incompatible geometry enters an explicit `NEEDS_CALIBRATION` lifecycle state.
 
@@ -21,7 +23,7 @@ Room v4 stores session aggregates and meaningful state transitions. Shadow `woul
 
 The optional compact overlay is a touchable `TYPE_APPLICATION_OVERLAY`. It can be dragged by its heading across the display while buttons remain independently clickable. Its default placement is below the populated event-card region, its known bounds are masked before CV analysis, and analysis fails closed with a placement warning if it overlaps a critical CV region. RADAR continues normally when overlay permission or the setting is absent.
 
-Card discovery always combines calibrated-lattice and scroll-tolerant free-scan candidates, then applies score-first non-maximum suppression and structural-evidence filtering. A visible lattice card can therefore coexist with a shifted card without producing duplicate tracks.
+Card discovery always combines calibrated-lattice and scroll-tolerant free-scan candidates, then applies score-first non-maximum suppression and structural-evidence filtering. A visible lattice card can therefore coexist with a shifted card without producing duplicate tracks. Temporal identity includes stable visual fingerprints from the title and location regions, so a still-visible event is not counted again after an intermittent missed frame or card movement.
 
 Travel time has no arbitrary maximum. Sending remains fail-closed unless both travel and remaining time are known and `travel + safety margin < remaining`. Capacity is fixed to the product rule that one available place is sufficient.
 

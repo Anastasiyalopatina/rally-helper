@@ -55,6 +55,12 @@ The Shadow session ran for 1,051 seconds (17:31), analyzed 2,331 frames, dropped
 
 The Capture Lab comparison is directional only, not a controlled benchmark. OFF produced 59/52/68 ms avg/p50/p95 over the long smoke. An earlier short ARMED observation produced 69/69/94 ms over 314 frames. Single CPU/RSS snapshots were noisy and are not reported as performance claims. Capture Lab therefore remains OFF by default.
 
+## Guarded refresh smoke
+
+Application source commit under test: `a41ba20`.
+
+On a physical device, the application processed 1,376 frames during a 482-second Shadow session. A refresh control appeared once on a confirmed event-list screen; the application issued one request, the system gesture callback completed successfully, and the control disappeared. Runtime totals were 1 request, 1 success and 0 failures. No join or send action was available or dispatched. Raw frames and device identifiers were not retained in the repository.
+
 ## Functional matrix status
 
 Only scenario H, an empty event list, was available during this validation window. It was captured and labelled locally; expected and actual behavior matched: event-list screen, no eligible target, and no alert. Scenarios A–G and I–M remain `NOT_RUN` because the live event supplied no rallies. Matrix completion is therefore 1/13, and the gate remains open.

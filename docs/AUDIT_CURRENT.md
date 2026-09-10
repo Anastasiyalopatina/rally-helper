@@ -27,11 +27,12 @@ Audited scope: the tree currently checked out from `main` plus the product-mode 
 - foreground notification STOP plus automation PAUSE/RESUME.
 - combined lattice/free-scan card detection with score-first NMS and stale RallyId request tests;
 - unlimited travel-time policy guarded by known countdown and an explicit safety margin.
+- guarded event-list refresh detection with one request per visible appearance, bounded stuck-control retry and a low-level Accessibility gesture bridge;
+- stable title/location visual fingerprints and non-expired-track matching to prevent repeated counts across intermittent frame misses or card movement.
 
 ## Intentionally gated
 
-- no AccessibilityService is registered;
-- no component can dispatch a gesture;
+- the AccessibilityService can dispatch only a refresh gesture requested by the guarded event-list coordinator;
 - ONE_TAP join requests fail closed with a validation-required reason;
 - AUTO can evaluate policy but cannot start JoinFlow;
 - squad selection and travel-time acceptance cannot act on unknown evidence.
