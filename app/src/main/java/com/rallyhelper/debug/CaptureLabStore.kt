@@ -2,6 +2,14 @@ package com.rallyhelper.debug
 
 import android.content.Context
 import android.graphics.Bitmap
+import org.json.JSONArray
+import org.json.JSONObject
+import radar.vision.DecisionKind
+import radar.vision.DetectorDecision
+import radar.vision.FrameAnalysis
+import radar.vision.RuntimeMode
+import radar.vision.ShadowAutoUpdate
+import radar.vision.TrackedRally
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.zip.ZipEntry
@@ -33,7 +41,16 @@ enum class CaptureLabLabel {
 
 /** In-memory five-second ring buffer. Archives are private app files and are never uploaded. */
 class CaptureLabStore(private val context: Context, private val windowMs: Long = 5_000) {
-    private data class Frame(val frameId: Long, val observedAtMonotonicMs: Long, val jpeg: ByteArray)
+    private data class Frame(
+        val analysis: FrameAnalysis,
+        val mode: RuntimeMode,
+        val radarDecisions: List<DetectorDecision>,
+        val actionDecisions: List<DetectorDecision>,
+        val currentTracks: List<TrackedRally>,
+        val shadowUpdate: ShadowAutoUpdate,
+        val actualAlertEmitted: Boolean,
+        val jpeg: ByteArray,
+    )
     private val frames = ArrayDeque<Frame>()
     private val directory get() = File(context.filesDir, "capture-lab")
     @Volatile private var armed = false
@@ -47,14 +64,38 @@ class CaptureLabStore(private val context: Context, private val windowMs: Long =
     fun isArmed(): Boolean = armed
 
     @Synchronized
-    fun add(bitmap: Bitmap, frameId: Long, observedAtMonotonicMs: Long) {
+    fun add(
+        bitmap: Bitmap,
+        analysis: FrameAnalysis,
+        mode: RuntimeMode,
+        radarDecisions: List<DetectorDecision>,
+        actionDecisions: List<DetectorDecision>,
+        currentTracks: List<TrackedRally>,
+        shadowUpdate: ShadowAutoUpdate,
+        actualAlertEmitted: Boolean,
+    ) {
         if (!armed) return
         val bytes = ByteArrayOutputStream().use { output ->
             bitmap.compress(Bitmap.CompressFormat.JPEG, 72, output)
             output.toByteArray()
         }
-        frames.addLast(Frame(frameId, observedAtMonotonicMs, bytes))
-        while (frames.firstOrNull()?.let { observedAtMonotonicMs - it.observedAtMonotonicMs > windowMs } == true) {
+        frames.addLast(
+            Frame(
+                analysis = analysis,
+                mode = mode,
+                radarDecisions = radarDecisions,
+                actionDecisions = actionDecisions,
+                currentTracks = currentTracks,
+                shadowUpdate = shadowUpdate,
+                actualAlertEmitted = actualAlertEmitted,
+                jpeg = bytes,
+            ),
+        )
+        while (
+            frames.firstOrNull()?.let {
+                analysis.observedAtMonotonicMs - it.analysis.observedAtMonotonicMs > windowMs
+            } == true
+        ) {
             frames.removeFirst()
         }
     }
@@ -67,22 +108,20 @@ class CaptureLabStore(private val context: Context, private val windowMs: Long =
         val archive = File(directory, "${System.currentTimeMillis()}-${label.name.lowercase()}.zip")
         ZipOutputStream(archive.outputStream().buffered()).use { zip ->
             snapshot.forEachIndexed { index, frame ->
-                zip.putNextEntry(ZipEntry("frames/${index.toString().padStart(3, '0')}-${frame.frameId}.jpg"))
+                zip.putNextEntry(
+                    ZipEntry("frames/${index.toString().padStart(3, '0')}-${frame.analysis.frameId}.jpg"),
+                )
                 zip.write(frame.jpeg)
                 zip.closeEntry()
             }
-            val manifest = buildString {
-                append("{\"label\":\"").append(label.name).append("\",\"optionalIntValue\":")
-                append(optionalIntValue ?: "null").append(",\"createdAtEpochMs\":")
-                append(System.currentTimeMillis()).append(",\"frameCount\":").append(snapshot.size)
-                append(",\"frames\":[")
-                snapshot.forEachIndexed { index, frame ->
-                    if (index > 0) append(',')
-                    append("{\"frameId\":").append(frame.frameId)
-                    append(",\"observedAtMonotonicMs\":").append(frame.observedAtMonotonicMs).append('}')
-                }
-                append("]}")
-            }
+            val manifest = JSONObject()
+                .put("schemaVersion", 2)
+                .put("label", label.name)
+                .put("optionalIntValue", optionalIntValue ?: JSONObject.NULL)
+                .put("createdAtEpochMs", System.currentTimeMillis())
+                .put("frameCount", snapshot.size)
+                .put("frames", JSONArray(snapshot.map(::frameJson)))
+                .toString()
             zip.putNextEntry(ZipEntry("manifest.json"))
             zip.write(manifest.toByteArray(Charsets.UTF_8))
             zip.closeEntry()
@@ -110,4 +149,81 @@ class CaptureLabStore(private val context: Context, private val windowMs: Long =
         }
         return bundle
     }
+
+    private fun frameJson(frame: Frame): JSONObject {
+        val analysis = frame.analysis
+        return JSONObject()
+            .put("frameId", analysis.frameId)
+            .put("observedAtMonotonicMs", analysis.observedAtMonotonicMs)
+            .put("mode", frame.mode.name)
+            .put("screen", analysis.screen.name)
+            .put("screenConfidence", analysis.screenConfidence.toDouble())
+            .put("rallies", JSONArray(analysis.rallies.map { rally ->
+                JSONObject()
+                    .put("boss", rally.bossType.name)
+                    .put("level", rally.level ?: JSONObject.NULL)
+                    .put("participantCount", rally.participantCount ?: JSONObject.NULL)
+                    .put("capacity", rally.capacity ?: JSONObject.NULL)
+                    .put("remainingSeconds", rally.remainingSeconds ?: JSONObject.NULL)
+                    .put("plusCount", rally.joinPlusBounds.size)
+                    .put("joinable", rally.joinable)
+                    .put("full", rally.full ?: JSONObject.NULL)
+                    .put("joinedState", rally.joinedState.name)
+                    .put("confidence", JSONObject()
+                        .put("card", rally.confidences.card.toDouble())
+                        .put("boss", rally.confidences.boss.toDouble())
+                        .put("level", rally.confidences.level.toDouble())
+                        .put("participant", rally.confidences.participant.toDouble())
+                        .put("plus", rally.confidences.plus.toDouble())
+                        .put("timer", rally.confidences.timer.toDouble()))
+            }))
+            .put("travelTime", JSONObject()
+                .put("value", analysis.travelTime.value ?: JSONObject.NULL)
+                .put("confidence", analysis.travelTime.confidence.toDouble())
+                .put("accepted", analysis.travelTime.accepted)
+                .put("rejectionReason", analysis.travelTime.rejectionReason ?: JSONObject.NULL))
+            .put("sendButtonFound", analysis.sendButtonFound)
+            .put("currentTracks", JSONArray(frame.currentTracks.map { track ->
+                JSONObject()
+                    .put("trackId", track.id.value)
+                    .put("observations", track.observations)
+                    .put("stable", track.stable)
+                    .put("lastSeenFrameId", track.lastSeenFrameId)
+                    .put("boss", track.candidate.bossType.name)
+                    .put("level", track.candidate.level ?: JSONObject.NULL)
+                    .put("participantCount", track.candidate.participantCount ?: JSONObject.NULL)
+                    .put("capacity", track.candidate.capacity ?: JSONObject.NULL)
+                    .put("remainingSeconds", track.candidate.remainingSeconds ?: JSONObject.NULL)
+                    .put("plusCount", track.candidate.joinPlusBounds.size)
+                    .put("joinedState", track.candidate.joinedState.name)
+            }))
+            .put("squads", JSONArray(analysis.squads.map { squad ->
+                JSONObject()
+                    .put("slotIndex", squad.slotIndex)
+                    .put("state", squad.state.name)
+                    .put("remainingSeconds", squad.remainingSeconds ?: JSONObject.NULL)
+                    .put("redirectPossible", squad.redirectPossible ?: JSONObject.NULL)
+                    .put("confidence", squad.confidence.toDouble())
+            }))
+            .put("radarDecisions", decisionsJson(frame.radarDecisions))
+            .put("actionDecisions", decisionsJson(frame.actionDecisions))
+            .put("shadow", JSONObject()
+                .put("phase", frame.shadowUpdate.phase.name)
+                .put("trackId", frame.shadowUpdate.rallyId?.value ?: JSONObject.NULL)
+                .put("delaySeconds", frame.shadowUpdate.delaySeconds ?: JSONObject.NULL)
+                .put("dueAtMonotonicMs", frame.shadowUpdate.dueAtMonotonicMs ?: JSONObject.NULL)
+                .put("policySkips", frame.shadowUpdate.policySkips)
+                .put("virtualAttempts", frame.shadowUpdate.virtualAttempts))
+            .put("radarWouldAlert", frame.radarDecisions.any { it.kind == DecisionKind.WOULD_SELECT })
+            .put("actionWouldSelect", frame.actionDecisions.any { it.kind == DecisionKind.WOULD_SELECT })
+            .put("actualAlertEmitted", frame.actualAlertEmitted)
+    }
+
+    private fun decisionsJson(decisions: List<DetectorDecision>) = JSONArray(decisions.map { decision ->
+        JSONObject()
+            .put("trackId", decision.rallyId?.value ?: JSONObject.NULL)
+            .put("kind", decision.kind.name)
+            .put("reason", decision.reason)
+            .put("hasTargetBounds", decision.targetBounds != null)
+    })
 }

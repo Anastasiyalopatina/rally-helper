@@ -17,5 +17,14 @@ fun main(args: Array<String>) {
         monotonicMs = 1,
     )
     println("screen=${analysis.screen} confidence=${analysis.screenConfidence}")
-    println("rallies=${analysis.rallies.size} diagnostics=${analysis.diagnostics.toSortedMap()}")
+    println("rallies=${analysis.rallies.size}")
+    analysis.rallies.forEachIndexed { index, rally ->
+        println(
+            "rally[$index] boss=${rally.bossType} level=${rally.level} " +
+                "participants=${rally.participantCount}/${rally.capacity} timer=${rally.remainingSeconds} " +
+                "plus=${rally.joinPlusBounds.size} state=${rally.joinedState} " +
+                "joinable=${rally.joinable} confidence=${rally.confidences}",
+        )
+    }
+    println("diagnostics=${analysis.diagnostics.toSortedMap()}")
 }

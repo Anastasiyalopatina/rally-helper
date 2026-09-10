@@ -404,12 +404,6 @@ class RadarForegroundService : Service() {
                     val observedMs = android.os.SystemClock.elapsedRealtime()
                     val analysis = detector.analyze(argbImage, frameIds.incrementAndGet(), observedMs)
                     lastAnalyzedFrameId = analysis.frameId
-                    if (currentSettings.captureLabArmed) {
-                        frameBuffer.snapshotDownscaled().also { small ->
-                            captureLabStore.add(small, analysis.frameId, observedMs)
-                            small.recycle()
-                        }
-                    }
                     if (analysis.screen == ScreenState.UNKNOWN) recordAbortOnce("screen:UNKNOWN") else lastAbortReason = null
                     val tracking = tracker.update(analysis)
                     val activeNow = tracking.active.filter { it.stable && it.presentInCurrentFrame && it.lastSeenFrameId == analysis.frameId }
@@ -430,6 +424,9 @@ class RadarForegroundService : Service() {
                         ),
                     ).decide(analysis, tracking)
                     val decisions = if (currentSettings.mode == RuntimeMode.RADAR) alertDecisions else actionDecisions
+                    val activeNowIds = activeNow.mapTo(hashSetOf()) { it.id }
+                    val currentRadarDecisions = alertDecisions.filter { it.rallyId == null || it.rallyId in activeNowIds }
+                    val currentActionDecisions = actionDecisions.filter { it.rallyId == null || it.rallyId in activeNowIds }
                     val decisionById = decisions.mapNotNull { decision -> decision.rallyId?.value?.let { it to decision } }.toMap()
                     activeNow.forEach { track ->
                         val id = track.id.value
@@ -455,6 +452,21 @@ class RadarForegroundService : Service() {
                     val shadowUpdate = if (currentSettings.mode == RuntimeMode.SHADOW_AUTO || currentSettings.mode == RuntimeMode.AUTO) {
                         shadowCoordinator.onFrame(analysis, tracking, actionDecisions).also(::recordShadowUpdate)
                     } else ShadowAutoUpdate(ShadowAutoPhase.IDLE)
+                    if (currentSettings.captureLabArmed) {
+                        frameBuffer.snapshotDownscaled().also { small ->
+                            captureLabStore.add(
+                                bitmap = small,
+                                analysis = analysis,
+                                mode = currentSettings.mode,
+                                radarDecisions = currentRadarDecisions,
+                                actionDecisions = currentActionDecisions,
+                                currentTracks = activeNow,
+                                shadowUpdate = shadowUpdate,
+                                actualAlertEmitted = newlyAlerted.isNotEmpty(),
+                            )
+                            small.recycle()
+                        }
+                    }
                     val overlayRallyId = shadowUpdate.rallyId
                         ?: decisions.firstOrNull { it.kind == DecisionKind.WOULD_SELECT }?.rallyId
                     val overlayRally = overlayRallyId?.let { id ->
