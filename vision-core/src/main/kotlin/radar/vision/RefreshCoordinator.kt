@@ -30,14 +30,12 @@ class RefreshCoordinator(
     @Synchronized
     fun onFrame(frame: FrameAnalysis, minimumScreenConfidence: Float = 0.70f): RefreshRequest? {
         if (frame.screen != ScreenState.EVENT_LIST || frame.screenConfidence < minimumScreenConfidence) {
-            absentFrames = 0
-            armed = true
+            recordAbsentFrame()
             return null
         }
         val bounds = frame.refreshButton.value
         if (!frame.refreshButton.accepted || bounds == null) {
-            absentFrames++
-            if (absentFrames >= absentFramesToRearm) armed = true
+            recordAbsentFrame()
             return null
         }
         absentFrames = 0
@@ -55,5 +53,10 @@ class RefreshCoordinator(
         // A failure is tied to the most recent request by the caller. Rearming is safe because
         // a new CV frame is still required before another request can be produced.
         if (frameId >= 0) armed = true
+    }
+
+    private fun recordAbsentFrame() {
+        absentFrames++
+        if (absentFrames >= absentFramesToRearm) armed = true
     }
 }

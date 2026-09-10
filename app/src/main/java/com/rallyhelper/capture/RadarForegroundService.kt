@@ -20,6 +20,7 @@ import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import com.rallyhelper.MainActivity
@@ -626,6 +627,7 @@ class RadarForegroundService : Service() {
         }
         val request = refreshCoordinator.onFrame(analysis) ?: return
         refreshRequestCount.incrementAndGet()
+        Log.i(REFRESH_LOG_TAG, "request frame=${request.frameId}")
         val accepted = GestureActionController.tap(
             point = request.targetBounds.center,
             displayWidth = captureWidth,
@@ -637,6 +639,7 @@ class RadarForegroundService : Service() {
                 refreshFailureCount.incrementAndGet()
                 refreshCoordinator.onDispatchFailed(request.frameId)
             }
+            Log.i(REFRESH_LOG_TAG, "result frame=${request.frameId} success=$succeeded")
             RadarRuntime.update {
                 it.copy(
                     refreshRequests = refreshRequestCount.get(),
@@ -649,6 +652,7 @@ class RadarForegroundService : Service() {
         if (!accepted) {
             refreshFailureCount.incrementAndGet()
             refreshCoordinator.onDispatchFailed(request.frameId)
+            Log.i(REFRESH_LOG_TAG, "result frame=${request.frameId} success=false unavailable=true")
             RadarRuntime.update {
                 it.copy(
                     refreshRequests = refreshRequestCount.get(),
@@ -863,6 +867,7 @@ class RadarForegroundService : Service() {
     }
 
     companion object {
+        private const val REFRESH_LOG_TAG = "RallyRefresh"
         private const val ACTION_START = "com.rallyhelper.START_RADAR"
         private const val ACTION_STOP = "com.rallyhelper.STOP_RADAR"
         private const val ACTION_PAUSE = "com.rallyhelper.PAUSE_AUTOMATION"

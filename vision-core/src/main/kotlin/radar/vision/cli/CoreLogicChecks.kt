@@ -184,6 +184,20 @@ fun main() {
     check(refresh.onFrame(refreshFrame(55, true)) == null)
     check(refresh.onFrame(refreshFrame(57, true))?.frameId == 57L) { "A stuck button must retry after timeout" }
 
+    refresh.reset()
+    check(refresh.onFrame(refreshFrame(60, true).copy(observedAtMonotonicMs = 3_000))?.frameId == 60L)
+    check(
+        refresh.onFrame(
+            refreshFrame(61, true).copy(
+                screen = ScreenState.UNKNOWN,
+                observedAtMonotonicMs = 3_100,
+            ),
+        ) == null,
+    )
+    check(refresh.onFrame(refreshFrame(62, true).copy(observedAtMonotonicMs = 3_200)) == null) {
+        "A single uncertain screen frame must not rearm the same visible refresh button"
+    }
+
     val machine = AutomationStateMachine()
     check(machine.dispatch(AutomationEvent.DelayElapsed(99), 0) is TransitionResult.Rejected)
     check(machine.dispatch(AutomationEvent.EligibleTarget(RallyId("r1"), 7), 100) is TransitionResult.Accepted)
