@@ -505,7 +505,7 @@ class RadarForegroundService : Service() {
                                     skipMin = currentSettings.skipMin,
                                     skipMax = currentSettings.skipMax,
                                     safetyMarginSeconds = currentSettings.safetyMarginSeconds,
-                                    detectorVersion = "c3-static-identity-v2",
+                                    detectorVersion = "c3-event-tabs-identity-v3",
                                     templateVersion = "runtime-template-v2",
                                 ),
                             )

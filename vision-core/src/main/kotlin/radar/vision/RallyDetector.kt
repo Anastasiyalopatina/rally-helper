@@ -24,6 +24,12 @@ class RallyDetector(
         }
         val eventCanvas = colorRatio(image, profile.eventCanvas, predicate = ::isEventCanvas)
         val eventHeader = colorRatio(image, profile.eventHeader, predicate = ::isDarkBlue)
+        val eventTabsDark = colorRatio(
+            image, NormalizedRect(0.02, 0.105, 0.65, 0.155), predicate = ::isDarkBlue,
+        )
+        val eventSelectedTabLight = colorRatio(
+            image, NormalizedRect(0.68, 0.105, 0.98, 0.155), predicate = ::isEventCanvas,
+        )
         val sendBlue = colorRatio(image, profile.sendButtonBand, predicate = ::isSendBlue)
         val marchPanelLight = colorRatio(
             image, NormalizedRect(0.14, 0.47, 0.86, 0.82), predicate = { luminance(it) in 145..245 },
@@ -37,7 +43,8 @@ class RallyDetector(
             // A populated list contains large saturated artwork/avatar regions, so its
             // neutral canvas ratio is naturally lower than the empty-state reference.
             // The dark-blue header remains the strong discriminator from helper UI.
-            eventCanvas >= 0.52 && eventHeader >= 0.25 -> ScreenState.EVENT_LIST
+            eventCanvas >= 0.52 && eventHeader >= 0.25 &&
+                eventTabsDark >= 0.35 && eventSelectedTabLight >= 0.35 -> ScreenState.EVENT_LIST
             worldGreen >= 0.42 && worldUiInk >= 0.10 -> ScreenState.WORLD_MAP
             else -> ScreenState.UNKNOWN
         }
@@ -50,6 +57,8 @@ class RallyDetector(
         val diagnostics = linkedMapOf(
             "eventCanvasRatio" to eventCanvas,
             "eventHeaderRatio" to eventHeader,
+            "eventTabsDarkRatio" to eventTabsDark,
+            "eventSelectedTabLightRatio" to eventSelectedTabLight,
             "sendBlueRatio" to sendBlue,
             "marchPanelLightRatio" to marchPanelLight,
             "worldGreenRatio" to worldGreen,
